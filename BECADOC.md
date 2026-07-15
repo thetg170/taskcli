@@ -168,10 +168,22 @@ uv run taskcli hotfix create --version v2.4.1 \
 
 ## 6. Worklog hằng ngày
 
-Log vào `WORKFLOW_ID` của subtask (thêm `--dry-run` để xem trước):
+Log vào `WORKFLOW_ID` của subtask (thêm `--dry-run` để xem trước).
+
+**Mô tả (`--desc`) luôn theo format 4 mục sau** (khớp template mặc định của khung Log Time trên BecaWork):
+
+```text
+Đã thực hiện: <việc đã làm>
+Kết quả: <đầu ra/kết quả cụ thể>
+Vướng mắc: <khó khăn gặp phải, nếu không có ghi "Không">
+Bước tiếp theo: <việc dự kiến làm tiếp>
+```
 
 ```bash
-uv run taskcli log 1424723 "Đã dựng endpoint predict và validate input" \
+uv run taskcli log 1424723 "Đã thực hiện: Dựng endpoint predict và validate input
+Kết quả: Endpoint chạy được, trả đúng response mẫu
+Vướng mắc: Không
+Bước tiếp theo: Viết test case cho endpoint" \
   --time 2h --type progress --date today \
   --external-id "2026-07-02:1424723:progress" --json
 ```
@@ -244,6 +256,7 @@ Quy tắc agent:
 - User không nói số giờ → hỏi lại; `8 tiếng` → `--time 8h`.
 - User không nói log cho hôm nay hay hôm qua thì hỏi lại.
 - Nếu `workflow_id`, giờ, ngày, nội dung đều đã rõ ràng từ yêu cầu của user, agent có thể chạy `log` trực tiếp (không bắt buộc `--dry-run` trước). Chỉ dùng `--dry-run` khi cần xác minh thêm (ví dụ payload phức tạp hoặc user yêu cầu xem trước). Không in credential ra câu trả lời.
+- Nội dung log (`--desc`) luôn viết theo format 4 mục ở §6 (`Đã thực hiện` / `Kết quả` / `Vướng mắc` / `Bước tiếp theo`), kể cả khi user chỉ mô tả ngắn gọn — agent tự diễn giải thành đủ 4 mục.
 
 Prompt mẫu đưa cho agent khác:
 
@@ -254,6 +267,7 @@ Bạn có thể dùng taskcli trong repo này. Luôn dùng --json.
   1) logtime status với --query nếu có keyword
   2) chọn workflow_id nếu chỉ một subtask khớp rõ; nhiều thì hỏi lại
   3) đủ thông tin (workflow_id, giờ, ngày, nội dung) thì log trực tiếp; --dry-run chỉ dùng khi cần xem trước
+  4) nội dung log luôn viết đủ 4 mục: Đã thực hiện / Kết quả / Vướng mắc / Bước tiếp theo
 Không ghi credential ra câu trả lời.
 ```
 
