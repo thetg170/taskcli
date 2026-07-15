@@ -92,6 +92,7 @@ def normalize_work(work: dict) -> dict[str, object]:
         "status": work.get("statusName") or work.get("status") or "",
         "start": work.get("start") or "",
         "end": work.get("end") or "",
+        "category": work.get("categoryName") or "",
     }
 
 

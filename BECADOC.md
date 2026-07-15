@@ -79,9 +79,13 @@ Field trả về theo operation (đều bọc trong `{"ok":true,"operation":...,
 |---|---|
 | `project.list` | `project_id`, `project_name`, `count` |
 | `story.list` | `workflow_id`, `title`, `project_id`, `project_name`, `status` |
-| `task.list` | `workflow_id`, `title`, `project_id`, `status` |
-| `subtask.list` | `workflow_id`, `title`, `project_id`, `status`, `parent_id` |
+| `task.list` | `workflow_id`, `title`, `project_id`, `status`, `category` |
+| `subtask.list` | `workflow_id`, `title`, `project_id`, `status`, `parent_id`, `category` |
 | `logtime.list` | `date`, `hours`, `action`, `description` (+ `total_logs`, `total_hours`) |
+
+`category` là Loại thật lấy từ BecaWork (`categoryName`, vd `"Task"` hoặc `"Sub-task"`) — **không suy ra Loại từ việc item nằm trong kết quả `task.list` hay `subtask.list`**, vì BecaWork cho phép Task làm cha của Task khác (lồng nhiều cấp), nên một item trả về từ `subtask list` vẫn có thể có `category` thật là `"Task"`.
+
+`parent_id` luôn là `workflow_id` của cha **trực tiếp** (không phải cha gốc); muốn hiển thị phân cấp nhiều tầng, dựng cây bằng cách nối các item theo `parent_id` (xem thêm ở §7).
 
 Quy tắc dùng kết quả:
 
@@ -223,6 +227,16 @@ Mục tiêu: agent trả lời được *"tôi có những task gì?"*, *"hôm n
 | "Hôm nay logtime chưa" / "task nào chưa log" | `logtime status --date today --json` | |
 
 Khi hỏi "tôi có task gì": trả lời **ngắn gọn theo trạng thái** (vd nhóm theo `Open` / `In Progress` / `Feedback`...), không liệt kê thêm cột logtime không liên quan tới câu hỏi. Nếu số lượng nhiều, có thể hỏi lại user muốn lọc theo project/status nào trước khi liệt kê hết.
+
+**Hiển thị phân cấp task/subtask (cái nào là con của cái nào):** đừng liệt kê phẳng khi user muốn thấy quan hệ cha-con. Dựng cây bằng `parent_id` của mỗi item (root là item không có cha trong tập kết quả, ví dụ lấy từ `task list --related`), rồi in dạng danh sách lồng nhau, thụt lề theo cấp độ:
+
+```text
+- <Work ID> [<Status>] (<category>) <Task title>
+  - <Work ID con> [<Status>] (<category>) <Task title con>
+    - <Work ID cháu> [<Status>] (<category>) <Task title cháu>
+```
+
+Một task có thể lồng nhiều cấp Task-trong-Task (không chỉ dừng ở Task→Sub-task), nên tránh gán cứng "Loại" theo tên lệnh — luôn hiển thị bằng field `category` thật (xem §3).
 
 **`subtask list --related` (không có `--parent-id`) tự đệ quy đầy đủ:** với mỗi task liên quan tới user, nó tự lấy **toàn bộ subtask ở mọi cấp** (kể cả subtask của subtask), và một subtask lồng sâu vẫn được tính miễn tổ tiên (task cha) của nó liên quan tới user — **không** yêu cầu chính subtask đó phải tự mang tag "related" (nhiều subtask trong BecaWork không có sẵn field người xử lý riêng dù vẫn thuộc về task của user). Chỉ khi gọi `subtask list` **không có** `--related` và **không có** `--parent-id` (liệt kê subtask của *mọi* task trong toàn hệ thống) thì mới chỉ lấy 1 cấp trực tiếp — trường hợp này hiếm dùng; nếu cần đủ mọi cấp cho một task cụ thể, dùng `subtask list --parent-id <TASK_WORKFLOW_ID> --recursive --json`.
 
