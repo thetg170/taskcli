@@ -71,6 +71,7 @@ project list → story list → task list → subtask list
 | `logtime list <id> [--date today]` | logtime đã ghi của một subtask/task |
 | `logtime list [--related] [--date today]` | logtime của **tất cả** task related (bỏ `<id>`); bỏ `--date` = mọi ngày |
 | `logtime timesheet --date <today\|yesterday\|YYYY-MM-DD>` | logtime thật của **một ngày cụ thể**, lấy từ TimeSheet BecaWork — bao quát **mọi project** (xem lưu ý bên dưới) |
+| `logtime timesheet --date <ngày> --days N` | logtime thật trong khoảng **N ngày gần nhất** tính đến `--date` (vd `--days 3` = 3 ngày gần nhất) |
 
 Thêm `--related`, `--query`, `--limit`, `--status`, `--json` tùy nhu cầu.
 
@@ -88,7 +89,9 @@ Field trả về theo operation (đều bọc trong `{"ok":true,"operation":...,
 
 `parent_id` luôn là `workflow_id` của cha **trực tiếp** (không phải cha gốc); muốn hiển thị phân cấp nhiều tầng, dựng cây bằng cách nối các item theo `parent_id` (xem thêm ở §7).
 
-**Quan trọng — `logtime status`/`logtime list --related` chỉ quét task/subtask trong phạm vi "liên quan tới user" qua `task list --related`.** Nếu bạn log giờ lên một task ở project khác (không nằm trong danh sách related đó), 2 lệnh này sẽ **bỏ sót**, báo thiếu giờ dù thực ra đã log đủ. Muốn biết chính xác **tổng số giờ đã log trong một ngày cụ thể** (bao quát mọi project), dùng `logtime timesheet --date <ngày> --json` — lệnh này lấy thẳng từ TimeSheet chính thức của BecaWork (nguồn UI `work/timesheet` dùng), không đi qua cây task/subtask nên không bị giới hạn phạm vi project. Trả về `total_hours`, `total_logs`, và `logtimes` (mảng chi tiết từng dòng: `workflow_id`, `title`, `hours`, `action`, `description`, đã strip HTML).
+**Quan trọng — `logtime status`/`logtime list --related` chỉ quét task/subtask trong phạm vi "liên quan tới user" qua `task list --related`.** Nếu bạn log giờ lên một task ở project khác (không nằm trong danh sách related đó), 2 lệnh này sẽ **bỏ sót**, báo thiếu giờ dù thực ra đã log đủ. Muốn biết chính xác **tổng số giờ đã log trong một ngày cụ thể** (bao quát mọi project), dùng `logtime timesheet --date <ngày> --json` — lệnh này lấy thẳng từ TimeSheet chính thức của BecaWork (nguồn UI `work/timesheet` dùng), không đi qua cây task/subtask nên không bị giới hạn phạm vi project. Trả về `total_hours`, `total_logs`, và `logtimes` (mảng chi tiết từng dòng: `date`, `workflow_id`, `title`, `hours`, `action`, `description`, đã strip HTML). Thêm `--days N` để lấy cả khoảng N ngày gần nhất (trả thêm `date_from`, `date_to`) — dùng khi user hỏi kiểu *"3 ngày gần nhất đã log gì"*.
+
+`description` giữ nguyên xuống dòng (`\n`) khi nội dung gốc có nhiều mục (vd viết theo format 4 mục ở §6: Đã thực hiện/Kết quả/Vướng mắc/Bước tiếp theo) — khi hiển thị cho user, **giữ nguyên từng dòng riêng biệt** (thụt lề dưới dòng tiêu đề), đừng nối thành 1 dòng dài bằng `;` hay `—` vì sẽ rất khó đọc.
 
 Quy tắc dùng kết quả:
 

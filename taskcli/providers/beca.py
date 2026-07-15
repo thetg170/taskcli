@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from datetime import date as date_cls, timedelta
 from html import unescape
 from contextlib import contextmanager
 from typing import Any
@@ -434,12 +435,29 @@ class BecaProvider(Provider):
 
     def timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
         date_value = str(filters.get("date") or "").strip()
+        days = max(1, int(filters.get("days") or 1))
+        end = date_cls.fromisoformat(date_value)
+        start = end - timedelta(days=days - 1)
+
         user = self._call(get_current_user, self._client())
         user_id = str(user.get("id") or "").strip()
-        raw = self._call(get_timesheet_report, self._client(), date_value, user_id)
-        entries = [entry for entry in (parse_timesheet_row(row) for row in raw) if entry and entry["date"] == date_value]
+
+        months = {(start.year, start.month), (end.year, end.month)}
+        raw: list[dict[str, Any]] = []
+        for year, month in months:
+            month_anchor = date_cls(year, month, 1).isoformat()
+            raw.extend(self._call(get_timesheet_report, self._client(), month_anchor, user_id))
+
+        all_entries = [entry for entry in (parse_timesheet_row(row) for row in raw) if entry]
+        entries = sorted(
+            (entry for entry in all_entries if entry["date"] and start.isoformat() <= entry["date"] <= end.isoformat()),
+            key=lambda entry: entry["date"],
+        )
         return {
             "date": date_value,
+            "date_from": start.isoformat(),
+            "date_to": end.isoformat(),
+            "days": days,
             "total_logs": len(entries),
             "total_hours": round(sum(entry["hours"] for entry in entries), 2),
             "logtimes": entries,
@@ -856,8 +874,14 @@ def parse_timesheet_row(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+BLOCK_CLOSE_RE = re.compile(r"</(p|li|div|h[1-6])>|<br\s*/?>", re.IGNORECASE)
+
+
 def html_to_text(value: str) -> str:
-    return unescape(re.sub(r"<[^>]+>", " ", value)).strip()
+    with_breaks = BLOCK_CLOSE_RE.sub("\n", value)
+    text = unescape(re.sub(r"<[^>]+>", " ", with_breaks))
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
 
 
 def compact_history(entry: dict[str, Any]) -> dict[str, Any]:

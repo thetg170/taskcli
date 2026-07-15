@@ -117,6 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common_flags(logtime_timesheet)
     logtime_timesheet.add_argument("--date", default="today", help="Date to check: today, yesterday, or YYYY-MM-DD.")
+    logtime_timesheet.add_argument(
+        "--days", type=int, default=1, help="Look back this many calendar days, ending at --date (inclusive)."
+    )
 
     task_parser = subparsers.add_parser("task", help="Task commands.")
     task_sub = task_parser.add_subparsers(dest="task_command", required=True)
@@ -377,7 +380,7 @@ def run_logtime(args: argparse.Namespace, config: Config, provider: Provider) ->
         status_result = provider.logtime_status(status_filters)
         return {"ok": True, "operation": "logtime.list", **flatten_logtime_status(status_result, args.limit)}
     if args.logtime_command == "timesheet":
-        filters = {"date": resolve_date_token(args.date)}
+        filters = {"date": resolve_date_token(args.date), "days": args.days}
         if args.dry_run:
             return dry_run_response("logtime.timesheet", provider.preview_timesheet(filters))
         result = provider.timesheet(filters)
