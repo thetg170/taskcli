@@ -572,6 +572,14 @@ def get_format_workflow(
 def get_work_children(client: BecaClient, workflow_id: str) -> list[dict]:
     params = {"WorkflowCode": workflow_id, "newLayout": "true"}
     data = client.request_json(f"{GET_WORK_CHILD_URL}?{urlencode(params)}", print_body=False)
+    if isinstance(data, list) and data:
+        return data
+    # newLayout=true only returns children one level below a Story; a Task
+    # parented under another Task (nesting beyond that) comes back empty
+    # there even though BecaWork's own UI shows it. newLayout=false (legacy
+    # shape) still returns those deeper children, so fall back to it.
+    params = {"WorkflowCode": workflow_id, "newLayout": "false"}
+    data = client.request_json(f"{GET_WORK_CHILD_URL}?{urlencode(params)}", print_body=False)
     return data if isinstance(data, list) else []
 
 

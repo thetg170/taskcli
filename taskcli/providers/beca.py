@@ -276,9 +276,15 @@ class BecaProvider(Provider):
                 ]
             return filter_task_rows(rows, filters)
 
+        if filters.get("related"):
+            rows: list[dict[str, Any]] = []
+            for _task, descendants in self._related_tasks_with_descendants(filters):
+                rows.extend(descendants)
+            return filter_task_rows(rows, {**filters, "related": False})
+
         task_filters = {**filters, "limit": None, "status": None, "query": None, "related": False}
         tasks = self.list_tasks(task_filters)
-        rows: list[dict[str, Any]] = []
+        rows = []
         for task in tasks:
             task_id = str(task.get("workflow_id") or "").strip()
             if not task_id:
@@ -303,21 +309,34 @@ class BecaProvider(Provider):
                     queue.append(child_id)
         return rows
 
+    def _related_tasks_with_descendants(
+        self, filters: dict[str, Any]
+    ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        """Every task related to the user, paired with its full descendant
+        subtask tree (any depth). Descendants are included unconditionally
+        once their ancestor task is related — a subtask often doesn't carry
+        its own userPartner entry for the assignee even though it belongs to
+        a task that does, so re-checking relatedness on each subtask would
+        drop real items."""
+        related_task_filters = {**filters, "limit": None, "status": None, "query": None, "project": None}
+        tasks = self.list_tasks(related_task_filters)
+        result: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for task in tasks:
+            task_id = str(task.get("workflow_id") or "").strip()
+            if not task_id:
+                continue
+            result.append((task, self._list_descendants(task_id)))
+        return result
+
     def _list_loggable_items(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         """Items that logtime is actually recorded against: every descendant
         subtask (any depth) if a task has subtasks, otherwise the task itself
         (per convention, a bare task with no subtask is logged directly)."""
         filters = self._with_related_user(filters)
-        task_filters = {**filters, "limit": None, "status": None, "query": None, "related": False}
-        tasks = self.list_tasks(task_filters)
         rows: list[dict[str, Any]] = []
-        for task in tasks:
-            task_id = str(task.get("workflow_id") or "").strip()
-            if not task_id:
-                continue
-            descendants = self._list_descendants(task_id)
+        for task, descendants in self._related_tasks_with_descendants(filters):
             rows.extend(descendants if descendants else [task])
-        return filter_task_rows(rows, filters)
+        return filter_task_rows(rows, {**filters, "related": False})
 
     def preview_list_subtasks(self, filters: dict[str, Any]) -> dict[str, Any]:
         if filters.get("parent_id"):
