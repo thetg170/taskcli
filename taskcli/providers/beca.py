@@ -437,7 +437,11 @@ class BecaProvider(Provider):
         date_value = str(filters.get("date") or "").strip()
         days = max(1, int(filters.get("days") or 1))
         end = date_cls.fromisoformat(date_value)
-        start = end - timedelta(days=days - 1)
+        # A multi-day window means "N most recent workdays" - weekends never
+        # have logtime, so a plain calendar-day window would waste slots on
+        # Sat/Sun and under-report actual work coverage. A single-day lookup
+        # (the default) still checks exactly the date given, weekend or not.
+        start = workday_window_start(end, days) if days > 1 else end
 
         user = self._call(get_current_user, self._client())
         user_id = str(user.get("id") or "").strip()
@@ -842,6 +846,19 @@ def log_matches_user(log: dict[str, Any], user_ref: str, user_email: str) -> boo
     if log_email:
         return log_email == user_email
     return True
+
+
+def workday_window_start(end: date_cls, days: int) -> date_cls:
+    """Earliest date such that [result, end] contains exactly `days` weekdays
+    (Mon-Fri), walking backward from `end` and skipping Saturday/Sunday."""
+    current = end
+    remaining = days
+    while True:
+        if current.weekday() < 5:
+            remaining -= 1
+            if remaining == 0:
+                return current
+        current -= timedelta(days=1)
 
 
 def compact_logtime(log: dict[str, Any]) -> dict[str, Any]:

@@ -71,7 +71,7 @@ project list → story list → task list → subtask list
 | `logtime list <id> [--date today]` | logtime đã ghi của một subtask/task |
 | `logtime list [--related] [--date today]` | logtime của **tất cả** task related (bỏ `<id>`); bỏ `--date` = mọi ngày |
 | `logtime timesheet --date <today\|yesterday\|YYYY-MM-DD>` | logtime thật của **một ngày cụ thể**, lấy từ TimeSheet BecaWork — bao quát **mọi project** (xem lưu ý bên dưới) |
-| `logtime timesheet --date <ngày> --days N` | logtime thật trong khoảng **N ngày gần nhất** tính đến `--date` (vd `--days 3` = 3 ngày gần nhất) |
+| `logtime timesheet --date <ngày> --days N` | logtime thật trong **N ngày làm việc gần nhất** tính đến `--date` (tự nhảy qua Thứ 7/CN, vd `--days 3` = 3 ngày làm việc gần nhất) |
 
 Thêm `--related`, `--query`, `--limit`, `--status`, `--json` tùy nhu cầu.
 
