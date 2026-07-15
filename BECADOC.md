@@ -316,7 +316,23 @@ uv run taskcli task need-to-test 1424723 --json
 
 Trạng thái khác không có shortcut thì dùng `--status "<tên>"` trong `task update` / `subtask update`.
 
-## 9. Test & troubleshooting
+## 9. Lịch sử & hoạt động
+
+Hai lệnh trả lời hai câu hỏi khác nhau — đừng nhầm: `history` soi **một task/subtask cụ thể** đã đổi những gì; `activity` soi **cả một project** (hoặc một người) vừa động vào việc gì.
+
+```bash
+uv run taskcli history 1425088 --json               # task/subtask này đã đổi status/parent từ khi nào, ai đổi
+uv run taskcli activity --project 1330631 --json     # ai vừa động vào task nào trong project này
+uv run taskcli activity --mine --json                 # chỉ hoạt động của chính user đăng nhập
+```
+
+`history` → mảng `history`, mỗi dòng là một lần đổi field: `date`, `field` (tên field BecaWork đổi, vd `"Trạng thái"`, `"Công việc cha"`), `old_value`, `new_value`, `updated_by`. Dùng khi cần trả lời *"task này chuyển sang In Progress từ ngày nào"* hoặc *"ai đổi parent của task này"*.
+
+`activity` → mảng `activity`, mỗi dòng là một sự kiện: `workflow_id`, `title`, `field`, `user`, `time` (dạng tương đối, vd `"1 ngày trước."`), `content` (nội dung trước → sau khi đổi, đã strip HTML). Lọc theo `--project`, `--mine` (hoặc `--user-id` là id BecaWork **có** prefix `P:`, vd `P:10881` — xem `whoami`), giới hạn số dòng bằng `--limit`.
+
+**`--date-from`/`--date-to` không có tác dụng lọc** (đã kiểm chứng: truyền `2020-01-01` vẫn ra cùng kết quả như không truyền) — BecaWork trả cố định N hoạt động gần nhất bất kể khoảng ngày. Đừng dùng 2 flag này để suy luận "có hoạt động đúng ngày X hay không"; chỉ dùng `activity` như một feed "gần đây" chung chung, muốn giới hạn số dòng thì dùng `--limit`.
+
+## 10. Test & troubleshooting
 
 ```bash
 python3 -m unittest discover -s tests -v

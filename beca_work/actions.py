@@ -28,6 +28,8 @@ GET_WORK_CHILD_URL = "https://work.becawork.vn/api/Default/Work_GetWorkChild"
 CREATE_WORK_ID_TEMP_URL = "https://work.becawork.vn/api/Default/Work_CreateWorkIdTemp"
 INSERT_WORK_URL = "https://work.becawork.vn/api/Default/Work_InsertWork"
 CHECK_APPLY_SLA_IN_PROJECT_URL = "https://work.becawork.vn/api/Default/Work_CheckApplySLAInProject"
+GET_HISTORY_CHANGED_STATUS_URL = "https://work.becawork.vn/api/Default/Work_GetHistoryChangedStatus"
+RECENT_ACTIVITY_URL = "https://work.becawork.vn/api/Default/Work_RecentActivity"
 
 
 def get_work_in_process(client: BecaClient, print_body: bool = True) -> list[dict]:
@@ -581,6 +583,21 @@ def get_work_children(client: BecaClient, workflow_id: str) -> list[dict]:
     # shape) still returns those deeper children, so fall back to it.
     params = {"WorkflowCode": workflow_id, "newLayout": "false"}
     data = client.request_json(f"{GET_WORK_CHILD_URL}?{urlencode(params)}", print_body=False)
+    return data if isinstance(data, list) else []
+
+
+def get_work_history(client: BecaClient, workflow_id: str) -> list[dict]:
+    params = {"id": workflow_id}
+    data = client.request_json(f"{GET_HISTORY_CHANGED_STATUS_URL}?{urlencode(params)}", print_body=False)
+    return data if isinstance(data, list) else []
+
+
+def get_recent_activity(client: BecaClient, project_id: str = "", user_id: str = "") -> list[dict]:
+    # dateFrom/dateTo exist on this endpoint but have no filtering effect in
+    # practice (verified: an out-of-range date still returns the same fixed
+    # "most recent N" set), so they're intentionally not exposed here.
+    params = {"projectId": project_id, "userId": user_id, "dateFrom": "", "dateTo": ""}
+    data = client.request_json(f"{RECENT_ACTIVITY_URL}?{urlencode(params)}", print_body=False)
     return data if isinstance(data, list) else []
 
 

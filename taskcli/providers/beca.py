@@ -27,8 +27,10 @@ from beca_work.actions import (
     get_next_statuses,
     get_project_id,
     get_statuses_by_project,
+    get_recent_activity,
     get_work_children,
     get_work_detail,
+    get_work_history,
     get_work_in_process,
     html_description,
     insert_status_history,
@@ -439,6 +441,38 @@ class BecaProvider(Provider):
             "filters": filters,
         }
 
+    def history(self, task_id: str) -> list[dict[str, Any]]:
+        raw = self._call(get_work_history, self._client(), task_id)
+        return [compact_history(entry) for entry in raw]
+
+    def preview_history(self, task_id: str) -> dict[str, Any]:
+        return {
+            "method": "GET",
+            "endpoint": "Work_GetHistoryChangedStatus",
+            "query": {"id": task_id},
+        }
+
+    def activity(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        project_id = str(filters.get("project") or "").strip()
+        user_id = str(filters.get("user_id") or "").strip()
+        if filters.get("mine") and not user_id:
+            user = self._call(get_current_user, self._client())
+            user_id = str(user.get("id") or "").strip()
+        raw = self._call(get_recent_activity, self._client(), project_id, user_id)
+        rows = [compact_activity(entry) for entry in raw]
+        return limit_rows(rows, filters.get("limit"))
+
+    def preview_activity(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "method": "GET",
+            "endpoint": "Work_RecentActivity",
+            "query": {
+                "projectId": filters.get("project") or "",
+                "userId": filters.get("user_id") or "",
+            },
+            "filters": filters,
+        }
+
     def show_task(self, task_id: str) -> dict[str, Any]:
         detail = self._call(get_work_detail, self._client(), task_id, False)
         if not isinstance(detail, dict):
@@ -786,3 +820,27 @@ def compact_logtime(log: dict[str, Any]) -> dict[str, Any]:
 
 def html_to_text(value: str) -> str:
     return unescape(re.sub(r"<[^>]+>", " ", value)).strip()
+
+
+def compact_history(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": entry.get("id"),
+        "workflow_id": str(entry.get("workid") or "").strip(),
+        "date": entry.get("date") or "",
+        "field": entry.get("columnName") or "",
+        "old_value": entry.get("oldValue"),
+        "new_value": entry.get("newValue"),
+        "updated_by": entry.get("updateUser") or "",
+        "note": entry.get("note") or "",
+    }
+
+
+def compact_activity(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "workflow_id": str(entry.get("workId") or "").strip(),
+        "title": entry.get("workName") or "",
+        "field": entry.get("columnName") or "",
+        "user": entry.get("fullName") or "",
+        "time": entry.get("time") or "",
+        "content": html_to_text(str(entry.get("content") or "")),
+    }

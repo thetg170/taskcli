@@ -47,6 +47,12 @@ class Provider(ABC):
     def list_logtime(self, task_id: str, filters: dict[str, Any]) -> dict[str, Any]:
         return {"task_id": task_id, "logtimes": []}
 
+    def history(self, task_id: str) -> list[dict[str, Any]]:
+        return []
+
+    def activity(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
+
     def preview_list_projects(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "project.list", "filters": filters}
 
@@ -64,6 +70,12 @@ class Provider(ABC):
 
     def preview_list_logtime(self, task_id: str, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "logtime.list", "task_id": task_id, "filters": filters}
+
+    def preview_history(self, task_id: str) -> dict[str, Any]:
+        return {"operation": "history.list", "task_id": task_id}
+
+    def preview_activity(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {"operation": "activity.list", "filters": filters}
 
     def preview_whoami(self) -> dict[str, Any]:
         return {"operation": "whoami"}

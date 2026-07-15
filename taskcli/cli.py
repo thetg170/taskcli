@@ -169,6 +169,22 @@ def build_parser() -> argparse.ArgumentParser:
     whoami = subparsers.add_parser("whoami", help="Show current BecaWork user and default assignee id.")
     add_common_flags(whoami)
 
+    history_parser = subparsers.add_parser(
+        "history", help="Show who changed what and when (status, parent, etc.) on a task or subtask."
+    )
+    add_common_flags(history_parser)
+    history_parser.add_argument("id", help="Task or sub-task WORKFLOW_ID.")
+    history_parser.add_argument("--limit", type=int, help="Maximum history entries to return (most recent first).")
+
+    activity_parser = subparsers.add_parser(
+        "activity", help="Show a recent-activity feed: who touched which task, and when."
+    )
+    add_common_flags(activity_parser)
+    activity_parser.add_argument("--project", help="Only activity within this project id.")
+    activity_parser.add_argument("--mine", action="store_true", help="Only activity by the current user.")
+    activity_parser.add_argument("--user-id", help="Only activity by this BecaWork user id, e.g. P:10881 (see `whoami`).")
+    activity_parser.add_argument("--limit", type=int, help="Maximum activity entries to return.")
+
     subtask_parser = subparsers.add_parser("subtask", aliases=["sub-task"], help="Sub-task commands.")
     subtask_sub = subtask_parser.add_subparsers(dest="issue_command", required=True)
     subtask_list = subtask_sub.add_parser("list", help="List subtasks.")
@@ -289,6 +305,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return run_log(args, config, provider, store)
     if args.command == "whoami":
         return run_whoami(args, provider)
+    if args.command == "history":
+        return run_history(args, provider)
+    if args.command == "activity":
+        return run_activity(args, provider)
     raise ValidationError("Unsupported command.", {"command": args.command})
 
 
@@ -558,6 +578,33 @@ def run_whoami(args: argparse.Namespace, provider: Provider) -> dict[str, Any]:
         "operation": "whoami",
         "user": provider.whoami(),
     }
+
+
+def run_history(args: argparse.Namespace, provider: Provider) -> dict[str, Any]:
+    if args.dry_run:
+        return dry_run_response("history.list", provider.preview_history(args.id))
+    entries = provider.history(args.id)
+    entries = limit_rows_cli(entries, args.limit)
+    return {"ok": True, "operation": "history.list", "task_id": args.id, "history": entries}
+
+
+def run_activity(args: argparse.Namespace, provider: Provider) -> dict[str, Any]:
+    filters = {
+        "project": args.project,
+        "mine": args.mine,
+        "user_id": args.user_id,
+        "limit": args.limit,
+    }
+    if args.dry_run:
+        return dry_run_response("activity.list", provider.preview_activity(filters))
+    entries = provider.activity(filters)
+    return {"ok": True, "operation": "activity.list", "activity": entries}
+
+
+def limit_rows_cli(rows: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    if not limit:
+        return rows
+    return rows[:limit]
 
 
 def build_task_create(args: argparse.Namespace, config: Config) -> TaskCreate:
