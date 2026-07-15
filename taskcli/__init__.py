@@ -1,0 +1,2 @@
+"""Agent-friendly task CLI."""
+
