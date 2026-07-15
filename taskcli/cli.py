@@ -108,6 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
     logtime_list.add_argument("--project", help="Filter by project id (used when task_id is omitted).")
     logtime_list.add_argument("-q", "--query", help="Filter by workflow id/title/project name (used when task_id is omitted).")
     logtime_list.add_argument("--limit", type=int, help="Maximum rows to return.")
+    logtime_timesheet = logtime_sub.add_parser(
+        "timesheet",
+        help=(
+            "Check logtime for a date using BecaWork's own TimeSheet report. "
+            "Covers ALL projects (unlike `status`/`list`, which only scan tasks related via `task list --related`)."
+        ),
+    )
+    add_common_flags(logtime_timesheet)
+    logtime_timesheet.add_argument("--date", default="today", help="Date to check: today, yesterday, or YYYY-MM-DD.")
 
     task_parser = subparsers.add_parser("task", help="Task commands.")
     task_sub = task_parser.add_subparsers(dest="task_command", required=True)
@@ -367,6 +376,12 @@ def run_logtime(args: argparse.Namespace, config: Config, provider: Provider) ->
             return dry_run_response("logtime.list", provider.preview_logtime_status(status_filters))
         status_result = provider.logtime_status(status_filters)
         return {"ok": True, "operation": "logtime.list", **flatten_logtime_status(status_result, args.limit)}
+    if args.logtime_command == "timesheet":
+        filters = {"date": resolve_date_token(args.date)}
+        if args.dry_run:
+            return dry_run_response("logtime.timesheet", provider.preview_timesheet(filters))
+        result = provider.timesheet(filters)
+        return {"ok": True, "operation": "logtime.timesheet", **result}
     if args.logtime_command not in {"status", "check"}:
         raise ValidationError("Unsupported logtime command.", {"logtime_command": args.logtime_command})
     filters = {

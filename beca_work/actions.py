@@ -30,6 +30,7 @@ INSERT_WORK_URL = "https://work.becawork.vn/api/Default/Work_InsertWork"
 CHECK_APPLY_SLA_IN_PROJECT_URL = "https://work.becawork.vn/api/Default/Work_CheckApplySLAInProject"
 GET_HISTORY_CHANGED_STATUS_URL = "https://work.becawork.vn/api/Default/Work_GetHistoryChangedStatus"
 RECENT_ACTIVITY_URL = "https://work.becawork.vn/api/Default/Work_RecentActivity"
+TIMESHEET_REPORT_URL = "https://work.becawork.vn/api/Default/Work_TimeSheetReport"
 
 
 def get_work_in_process(client: BecaClient, print_body: bool = True) -> list[dict]:
@@ -589,6 +590,16 @@ def get_work_children(client: BecaClient, workflow_id: str) -> list[dict]:
 def get_work_history(client: BecaClient, workflow_id: str) -> list[dict]:
     params = {"id": workflow_id}
     data = client.request_json(f"{GET_HISTORY_CHANGED_STATUS_URL}?{urlencode(params)}", print_body=False)
+    return data if isinstance(data, list) else []
+
+
+def get_timesheet_report(client: BecaClient, date: str, email: str) -> list[dict]:
+    # `email` here is actually the BecaWork person ref (e.g. "P:10881"), not
+    # a raw email address - matches the query BecaWork's own web UI sends.
+    # `projectName=-1` means "all projects"; `department` has no effect when
+    # left blank (verified: same result set with/without a real dept id).
+    params = {"date": date, "projectName": "-1", "email": email, "department": ""}
+    data = client.request_json(f"{TIMESHEET_REPORT_URL}?{urlencode(params)}", print_body=False)
     return data if isinstance(data, list) else []
 
 

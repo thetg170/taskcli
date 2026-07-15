@@ -28,6 +28,7 @@ from beca_work.actions import (
     get_project_id,
     get_statuses_by_project,
     get_recent_activity,
+    get_timesheet_report,
     get_work_children,
     get_work_detail,
     get_work_history,
@@ -431,6 +432,27 @@ class BecaProvider(Provider):
             "filters": filters,
         }
 
+    def timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
+        date_value = str(filters.get("date") or "").strip()
+        user = self._call(get_current_user, self._client())
+        user_id = str(user.get("id") or "").strip()
+        raw = self._call(get_timesheet_report, self._client(), date_value, user_id)
+        entries = [entry for entry in (parse_timesheet_row(row) for row in raw) if entry and entry["date"] == date_value]
+        return {
+            "date": date_value,
+            "total_logs": len(entries),
+            "total_hours": round(sum(entry["hours"] for entry in entries), 2),
+            "logtimes": entries,
+        }
+
+    def preview_timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "method": "GET",
+            "endpoint": "Work_TimeSheetReport",
+            "query": {"date": filters.get("date"), "projectName": "-1", "email": "<current user P: id>", "department": ""},
+            "filters": filters,
+        }
+
     def preview_logtime_status(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {
             "operation": "logtime.status",
@@ -815,6 +837,22 @@ def compact_logtime(log: dict[str, Any]) -> dict[str, Any]:
         "description_html": description_html,
         "user": log.get("Nguoilap") or log.get("user") or "",
         "email": log.get("Email") or log.get("email") or "",
+    }
+
+
+def parse_timesheet_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    raw_data = row.get("data")
+    if not raw_data:
+        return None
+    try:
+        log = json.loads(raw_data)
+    except (TypeError, ValueError):
+        return None
+    return {
+        **compact_logtime(log),
+        "date": str(row.get("dateLogtime") or "").strip(),
+        "workflow_id": str(row.get("workId") or "").strip(),
+        "title": row.get("workLogtime") or "",
     }
 
 

@@ -70,6 +70,7 @@ project list → story list → task list → subtask list
 | `subtask show <WORKFLOW_ID>` | chi tiết/nội dung mô tả đầy đủ của một subtask |
 | `logtime list <id> [--date today]` | logtime đã ghi của một subtask/task |
 | `logtime list [--related] [--date today]` | logtime của **tất cả** task related (bỏ `<id>`); bỏ `--date` = mọi ngày |
+| `logtime timesheet --date <today\|yesterday\|YYYY-MM-DD>` | logtime thật của **một ngày cụ thể**, lấy từ TimeSheet BecaWork — bao quát **mọi project** (xem lưu ý bên dưới) |
 
 Thêm `--related`, `--query`, `--limit`, `--status`, `--json` tùy nhu cầu.
 
@@ -86,6 +87,8 @@ Field trả về theo operation (đều bọc trong `{"ok":true,"operation":...,
 `category` là Loại thật lấy từ BecaWork (`categoryName`, vd `"Task"` hoặc `"Sub-task"`) — **không suy ra Loại từ việc item nằm trong kết quả `task.list` hay `subtask.list`**, vì BecaWork cho phép Task làm cha của Task khác (lồng nhiều cấp), nên một item trả về từ `subtask list` vẫn có thể có `category` thật là `"Task"`.
 
 `parent_id` luôn là `workflow_id` của cha **trực tiếp** (không phải cha gốc); muốn hiển thị phân cấp nhiều tầng, dựng cây bằng cách nối các item theo `parent_id` (xem thêm ở §7).
+
+**Quan trọng — `logtime status`/`logtime list --related` chỉ quét task/subtask trong phạm vi "liên quan tới user" qua `task list --related`.** Nếu bạn log giờ lên một task ở project khác (không nằm trong danh sách related đó), 2 lệnh này sẽ **bỏ sót**, báo thiếu giờ dù thực ra đã log đủ. Muốn biết chính xác **tổng số giờ đã log trong một ngày cụ thể** (bao quát mọi project), dùng `logtime timesheet --date <ngày> --json` — lệnh này lấy thẳng từ TimeSheet chính thức của BecaWork (nguồn UI `work/timesheet` dùng), không đi qua cây task/subtask nên không bị giới hạn phạm vi project. Trả về `total_hours`, `total_logs`, và `logtimes` (mảng chi tiết từng dòng: `workflow_id`, `title`, `hours`, `action`, `description`, đã strip HTML).
 
 Quy tắc dùng kết quả:
 
@@ -224,7 +227,8 @@ Mục tiêu: agent trả lời được *"tôi có những task gì?"*, *"hôm n
 | Câu hỏi | Lệnh dùng | Không dùng |
 |---|---|---|
 | "Tôi có task gì" / "task đang xử lý" | `task list --related --json` + `subtask list --related --json` | `logtime status` (đây là câu hỏi về **worklog**, không phải câu hỏi về **danh sách task**) |
-| "Hôm nay logtime chưa" / "task nào chưa log" | `logtime status --date today --json` | |
+| "Hôm nay logtime chưa / đủ giờ chưa" (số giờ tổng của 1 ngày) | `logtime timesheet --date today --json` | `logtime status` — chỉ quét task related, có thể báo sai nếu log ở project khác (xem §3) |
+| "Task nào chưa log" (muốn biết chưa log lên **task nào**, không chỉ tổng giờ) | `logtime status --date today --json` | |
 
 Khi hỏi "tôi có task gì": trả lời **ngắn gọn theo trạng thái** (vd nhóm theo `Open` / `In Progress` / `Feedback`...), không liệt kê thêm cột logtime không liên quan tới câu hỏi. Nếu số lượng nhiều, có thể hỏi lại user muốn lọc theo project/status nào trước khi liệt kê hết.
 

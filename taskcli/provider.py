@@ -53,6 +53,9 @@ class Provider(ABC):
     def activity(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
+    def timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {"date": filters.get("date"), "total_logs": 0, "total_hours": 0, "logtimes": []}
+
     def preview_list_projects(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "project.list", "filters": filters}
 
@@ -76,6 +79,9 @@ class Provider(ABC):
 
     def preview_activity(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "activity.list", "filters": filters}
+
+    def preview_timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {"operation": "logtime.timesheet", "filters": filters}
 
     def preview_whoami(self) -> dict[str, Any]:
         return {"operation": "whoami"}
