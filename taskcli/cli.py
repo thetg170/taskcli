@@ -456,15 +456,51 @@ def default_gaps_csv_path(department: str, month: str) -> str:
 
 
 def prompt_save_path_dialog(default_name: str) -> str | None:
-    """Open the native macOS "Save As" dialog so the user can pick a folder + filename.
-    Returns None if osascript isn't available (non-macOS) or the user cancels -
-    caller should fall back to a plain default path in that case."""
+    """Open the OS's native "Save As" dialog so the user can pick a folder +
+    filename. Returns None if there's no dialog support for this platform, or
+    the user cancels - caller should skip the CSV export in that case."""
+    if sys.platform == "darwin":
+        return prompt_save_path_dialog_macos(default_name)
+    if sys.platform == "win32":
+        return prompt_save_path_dialog_windows(default_name)
+    return None
+
+
+def prompt_save_path_dialog_macos(default_name: str) -> str | None:
     script = (
         f'POSIX path of (choose file name with prompt "Save timesheet gaps CSV as:" '
         f'default name "{default_name}" default location (POSIX file "{os.getcwd()}"))'
     )
     try:
         result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def prompt_save_path_dialog_windows(default_name: str) -> str | None:
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms\n"
+        "$dialog = New-Object System.Windows.Forms.SaveFileDialog\n"
+        f"$dialog.InitialDirectory = {powershell_quote(os.getcwd())}\n"
+        f"$dialog.FileName = {powershell_quote(default_name)}\n"
+        "$dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'\n"
+        "$dialog.Title = 'Save timesheet gaps CSV as:'\n"
+        "if ($dialog.ShowDialog() -eq 'OK') { Write-Output $dialog.FileName }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
