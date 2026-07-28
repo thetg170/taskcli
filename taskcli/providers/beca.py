@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from calendar import monthrange
 from datetime import date as date_cls, timedelta
 from html import unescape
 from contextlib import contextmanager
@@ -28,6 +29,8 @@ from beca_work.actions import (
     get_next_statuses,
     get_project_id,
     get_statuses_by_project,
+    get_department_leave_calendar,
+    get_department_timesheet_report,
     get_recent_activity,
     get_timesheet_report,
     get_work_children,
@@ -40,6 +43,7 @@ from beca_work.actions import (
     normalize_project,
     normalize_work,
     object_to_fields,
+    parse_leave_days,
     person_ref,
     require_work_detail,
     update_work_field,
@@ -475,6 +479,94 @@ class BecaProvider(Provider):
             "filters": filters,
         }
 
+    def timesheet_gaps(self, filters: dict[str, Any]) -> dict[str, Any]:
+        month_str, year_str = str(filters.get("month")).split("/")
+        month, year = int(month_str), int(year_str)
+        today = date_cls.today()
+        if (year, month) == (today.year, today.month):
+            # Today's log isn't due until end of day, so don't flag it as missing yet.
+            up_to = date_cls.fromordinal(today.toordinal() - 1)
+        else:
+            up_to = date_cls(year, month, monthrange(year, month)[1])
+        workdays = workdays_in_month(year, month, up_to)
+
+        excluded = {value.strip().casefold() for value in DEFAULT_TIMESHEET_GAPS_EXCLUDE + list(filters.get("exclude") or [])}
+
+        raw = self._call(get_department_timesheet_report, self._client(), filters.get("month"), str(filters.get("department")))
+        people: dict[str, dict[str, Any]] = {}
+        for row in raw:
+            entry = parse_timesheet_row(row)
+            if not entry or not entry["email"]:
+                continue
+            person = people.setdefault(entry["email"], {"name": entry["user"] or entry["email"], "hours": {}, "ref": ""})
+            if entry["date"]:
+                try:
+                    day = date_cls.fromisoformat(entry["date"][:10])
+                except ValueError:
+                    day = None
+                if day:
+                    person["hours"][day] = person["hours"].get(day, 0.0) + entry["hours"]
+            if entry["person_ref"] and not person["ref"]:
+                person["ref"] = entry["person_ref"]
+
+        leave_days: dict[str, dict[str, float]] = {}
+        try:
+            if not workdays:
+                raise ValueError("no workdays in range")
+            leave_raw = self._call(
+                get_department_leave_calendar,
+                self._client(),
+                workdays[0].isoformat(),
+                workdays[-1].isoformat(),
+                str(filters.get("department")),
+            )
+            leave_days = parse_leave_days(leave_raw)
+        except Exception:
+            # Best-effort: gaps report still works without leave info if this
+            # (separate-subdomain, separately-authed) call fails.
+            pass
+
+        # A full workday is 8h logtime; a half-day leave still expects the
+        # other 4h logged, a full-day leave expects nothing.
+        FULL_DAY_HOURS = 8.0
+
+        results = []
+        for email in sorted(people, key=lambda e: people[e]["name"]):
+            person = people[email]
+            if person["name"].strip().casefold() in excluded or email.strip().casefold() in excluded:
+                continue
+            on_leave = leave_days.get(person["ref"], {})
+            missing = []
+            for d in workdays:
+                required = FULL_DAY_HOURS * (1 - on_leave.get(d.isoformat(), 0.0))
+                if required <= 0:
+                    continue
+                logged = person["hours"].get(d, 0.0)
+                if logged + 1e-9 < required:
+                    missing.append(d)
+            if missing:
+                results.append({
+                    "name": person["name"],
+                    "email": email,
+                    "missing_count": len(missing),
+                    "missing_dates": [d.isoformat() for d in missing],
+                })
+
+        return {
+            "month": filters.get("month"),
+            "department": filters.get("department"),
+            "workdays": [d.isoformat() for d in workdays],
+            "people": results,
+        }
+
+    def preview_timesheet_gaps(self, filters: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "method": "GET",
+            "endpoint": "Work_TimeSheetPersonal",
+            "query": {"date": filters.get("month"), "projectName": "-1", "email": "", "department": filters.get("department")},
+            "filters": filters,
+        }
+
     def preview_logtime_status(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {
             "operation": "logtime.status",
@@ -848,6 +940,26 @@ def log_matches_user(log: dict[str, Any], user_ref: str, user_email: str) -> boo
     return True
 
 
+# Always left out of `logtime gaps` (e.g. people on long leave, already
+# tracked separately). Add full name or email, either works.
+DEFAULT_TIMESHEET_GAPS_EXCLUDE = [
+    "NGUYỄN QUANG VINH",
+    "NGUYỄN THỊ LOAN",
+]
+
+
+def workdays_in_month(year: int, month: int, up_to: date_cls) -> list[date_cls]:
+    last_day = monthrange(year, month)[1]
+    days = []
+    for day in range(1, last_day + 1):
+        d = date_cls(year, month, day)
+        if d > up_to:
+            break
+        if d.weekday() < 5:  # Mon-Fri
+            days.append(d)
+    return days
+
+
 def workday_window_start(end: date_cls, days: int) -> date_cls:
     """Earliest date such that [result, end] contains exactly `days` weekdays
     (Mon-Fri), walking backward from `end` and skipping Saturday/Sunday."""
@@ -872,6 +984,7 @@ def compact_logtime(log: dict[str, Any]) -> dict[str, Any]:
         "description_html": description_html,
         "user": log.get("Nguoilap") or log.get("user") or "",
         "email": log.get("Email") or log.get("email") or "",
+        "person_ref": log.get("UserId") or "",
     }
 
 

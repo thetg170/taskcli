@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import os
+import subprocess
 import sys
+from datetime import date as date_cls
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -15,6 +19,8 @@ from .providers import BecaProvider, MockProvider
 
 
 ROLE_PREFIXES = {"PM", "PO", "BA", "UIUX", "FE", "BE", "MOBILE", "DEVOPS", "QC", "DE", "AI"}
+
+AUTO_CSV_PATH = "__auto__"
 
 STATUS_SHORTCUTS = {
     "done": "Done",
@@ -120,6 +126,26 @@ def build_parser() -> argparse.ArgumentParser:
     logtime_timesheet.add_argument(
         "--days", type=int, default=1, help="Look back this many calendar days, ending at --date (inclusive)."
     )
+    logtime_gaps = logtime_sub.add_parser(
+        "gaps",
+        help="Report which department members missed logging time on weekdays this month.",
+    )
+    add_common_flags(logtime_gaps)
+    today = date_cls.today()
+    logtime_gaps.add_argument("--month", default=f"{today.month:02d}/{today.year}", help="MM/YYYY, default current month.")
+    logtime_gaps.add_argument("--department", default="5", help="BecaWork department id, default 5.")
+    logtime_gaps.add_argument(
+        "--exclude", action="append", default=[], help="Full name or email to leave out of the report. Repeatable."
+    )
+    logtime_gaps.add_argument(
+        "--csv",
+        nargs="?",
+        const=AUTO_CSV_PATH,
+        default=AUTO_CSV_PATH,
+        help="Write one row per person (with a joined missing-dates list) to this CSV path. "
+        "Defaults to opening a native Save dialog; pass --no-csv to skip CSV export entirely.",
+    )
+    logtime_gaps.add_argument("--no-csv", dest="csv", action="store_const", const=None, help="Skip CSV export, just print the report.")
 
     task_parser = subparsers.add_parser("task", help="Task commands.")
     task_sub = task_parser.add_subparsers(dest="task_command", required=True)
@@ -385,6 +411,25 @@ def run_logtime(args: argparse.Namespace, config: Config, provider: Provider) ->
             return dry_run_response("logtime.timesheet", provider.preview_timesheet(filters))
         result = provider.timesheet(filters)
         return {"ok": True, "operation": "logtime.timesheet", **result}
+    if args.logtime_command == "gaps":
+        filters = {"month": args.month, "department": args.department, "exclude": args.exclude}
+        if args.dry_run:
+            return dry_run_response("logtime.gaps", provider.preview_timesheet_gaps(filters))
+        result = provider.timesheet_gaps(filters)
+        if args.csv:
+            csv_path = args.csv
+            if csv_path == AUTO_CSV_PATH:
+                default_name = default_gaps_csv_path(args.department, args.month)
+                csv_path = prompt_save_path_dialog(default_name)
+                if csv_path is None:
+                    print("Save dialog unavailable or cancelled - skipping CSV export.")
+                    return {"ok": True, "operation": "logtime.gaps", **result}
+                # The native Save dialog already asked to replace if this path exists.
+            else:
+                csv_path = resolve_csv_path(csv_path)
+            write_timesheet_gaps_csv(csv_path, result["people"])
+            result = {**result, "csv": csv_path}
+        return {"ok": True, "operation": "logtime.gaps", **result}
     if args.logtime_command not in {"status", "check"}:
         raise ValidationError("Unsupported logtime command.", {"logtime_command": args.logtime_command})
     filters = {
@@ -403,6 +448,46 @@ def run_logtime(args: argparse.Namespace, config: Config, provider: Provider) ->
         return dry_run_response("logtime.status", provider.preview_logtime_status(filters))
     result = provider.logtime_status(filters)
     return {"ok": True, "operation": "logtime.status", **result}
+
+
+def default_gaps_csv_path(department: str, month: str) -> str:
+    month_str, year_str = month.split("/")
+    return f"dept{department}_gaps_{year_str}{month_str}.csv"
+
+
+def prompt_save_path_dialog(default_name: str) -> str | None:
+    """Open the native macOS "Save As" dialog so the user can pick a folder + filename.
+    Returns None if osascript isn't available (non-macOS) or the user cancels -
+    caller should fall back to a plain default path in that case."""
+    script = (
+        f'POSIX path of (choose file name with prompt "Save timesheet gaps CSV as:" '
+        f'default name "{default_name}" default location (POSIX file "{os.getcwd()}"))'
+    )
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def resolve_csv_path(path: str) -> str:
+    while Path(path).exists():
+        answer = input(f"'{path}' already exists. (r)eplace, or enter a new filename: ").strip()
+        if not answer or answer.lower() in {"r", "replace"}:
+            break
+        path = answer
+    return path
+
+
+def write_timesheet_gaps_csv(path: str, people: list[dict[str, Any]]) -> None:
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["full_name", "email", "missing_count", "missing_dates"])
+        for person in people:
+            missing_str = ", ".join(date_cls.fromisoformat(d).strftime("%d/%m") for d in person["missing_dates"])
+            writer.writerow([person["name"], person["email"], person["missing_count"], missing_str])
 
 
 def flatten_logtime_status(status_result: dict[str, Any], limit: int | None) -> dict[str, Any]:
@@ -817,6 +902,9 @@ def emit_success(result: dict[str, Any], as_json: bool) -> None:
     if operation == "logtime.list":
         print_logtime_rows(result)
         return
+    if operation == "logtime.gaps":
+        print_timesheet_gaps(result)
+        return
     if result.get("idempotent"):
         print(f"{operation}: existing record")
     else:
@@ -842,6 +930,21 @@ def print_project_rows(projects: list[dict[str, Any]]) -> None:
     for index, project in enumerate(projects, start=1):
         name = single_line(project.get("project_name"))
         print(f"{index:>2}  {str(project.get('project_id') or ''):<12}  {str(project.get('count') or ''):<8}  {name}")
+
+
+def print_timesheet_gaps(result: dict[str, Any]) -> None:
+    workdays = result.get("workdays") or []
+    people = result.get("people") or []
+    if workdays:
+        print(f"Department {result.get('department')} — {result.get('month')}, {len(workdays)} workdays "
+              f"({workdays[0]} -> {workdays[-1]})\n")
+    if not people:
+        print("No gaps found for the workdays checked.")
+    for person in people:
+        missing_str = ", ".join(date_cls.fromisoformat(d).strftime("%d/%m") for d in person["missing_dates"])
+        print(f"- {person['name']} ({person['email']}): missing {person['missing_count']} day(s) -> {missing_str}")
+    if result.get("csv"):
+        print(f"\nCSV written: {result['csv']}")
 
 
 def print_story_rows(stories: list[dict[str, Any]]) -> None:
