@@ -118,12 +118,11 @@ class BecaClient:
         if self.xsrf_token:
             return self.xsrf_token
 
-        request = Request(
+        body = self.open_with_auth_forms(
             "https://work.becawork.vn/api/antiforgery/token",
-            headers=self.base_headers({"Content-Type": "application/json; charset=UTF-8"}),
+            headers={"Content-Type": "application/json; charset=UTF-8"},
         )
-        with self.opener.open(request, timeout=self.timeout) as response:
-            self.xsrf_token = json.loads(response.read().decode("utf-8"))
+        self.xsrf_token = json.loads(body)
 
         return self.xsrf_token
 
