@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+from calendar import monthrange
+from collections import Counter
 from datetime import date as date_cls
 from pathlib import Path
 from typing import Any, Sequence
@@ -21,6 +23,7 @@ from .providers import BecaProvider, MockProvider
 ROLE_PREFIXES = {"PM", "PO", "BA", "UIUX", "FE", "BE", "MOBILE", "DEVOPS", "QC", "DE", "AI"}
 
 AUTO_CSV_PATH = "__auto__"
+WORK_SCOPES = ("active", "completed", "all", "project")
 
 STATUS_SHORTCUTS = {
     "done": "Done",
@@ -162,9 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--sprint", default=None, help="Sprint name or 'current'.")
     list_cmd.add_argument("--status", help="Filter by status.")
     list_cmd.add_argument("-q", "--query", help="Filter by workflow id/title/project name.")
-    list_cmd.add_argument("--mine", action="store_true", help="Only tasks assigned to default assignee.")
+    list_cmd.add_argument("--mine", "--assigned-to-me", action="store_true", help="Only tasks assigned to the current account (not followers or assigners).")
     list_cmd.add_argument("--related", action="store_true", help="Only tasks related to current user.")
     list_cmd.add_argument("--today", action="store_true", help="Only tasks created/started today.")
+    list_cmd.add_argument("--from", dest="date_from", help="Include tasks active on or after YYYY-MM-DD.")
+    list_cmd.add_argument("--to", dest="date_to", help="Include tasks active on or before YYYY-MM-DD.")
+    list_cmd.add_argument("--recursive", action="store_true", help="Include descendants at all depths.")
+    list_cmd.add_argument("--scope", choices=WORK_SCOPES, help="Search current, processed, both, or an explicit project (includes listed root tasks).")
     list_cmd.add_argument("--limit", type=int, help="Maximum rows to return.")
 
     show = task_sub.add_parser("show", help="Show a task.")
@@ -223,6 +230,32 @@ def build_parser() -> argparse.ArgumentParser:
     activity_parser.add_argument("--user-id", help="Only activity by this BecaWork user id, e.g. P:10881 (see `whoami`).")
     activity_parser.add_argument("--limit", type=int, help="Maximum activity entries to return.")
 
+    report_parser = subparsers.add_parser("report", help="Read-only work and timesheet summaries.")
+    report_sub = report_parser.add_subparsers(dest="report_command", required=True)
+    report_work = report_sub.add_parser("work", help="Summarize tasks assigned to the current account in a planned date range.")
+    add_common_flags(report_work)
+    report_work.add_argument("--from", dest="date_from", required=True)
+    report_work.add_argument("--to", dest="date_to", required=True)
+    report_work.add_argument("--project", help="Restrict to a project id.")
+    report_work.add_argument("--scope", choices=WORK_SCOPES, default="all")
+    report_work.add_argument("--recursive", action="store_true", help="Include all descendant levels; may be slower across historical projects.")
+    report_work.add_argument("--status", help="Restrict to a task status.")
+    report_work.add_argument("-q", "--query", help="Filter task title/id.")
+    report_timesheet = report_sub.add_parser("timesheet", help="Summarize the current user's logtime for a calendar month.")
+    add_common_flags(report_timesheet)
+    report_timesheet.add_argument("--month", default=today.strftime("%Y-%m"), help="YYYY-MM, defaults to current month.")
+
+    for kind, description in (
+        ("comment", "Read task comments."),
+        ("checklist", "Read task checklist."),
+        ("attachment", "List task attachment metadata without downloading files."),
+    ):
+        resource = subparsers.add_parser(kind, help=description)
+        resource_sub = resource.add_subparsers(dest="resource_command", required=True)
+        resource_list = resource_sub.add_parser("list", help=description)
+        add_common_flags(resource_list)
+        resource_list.add_argument("id", help="Task WORKFLOW_ID.")
+
     subtask_parser = subparsers.add_parser("subtask", aliases=["sub-task"], help="Sub-task commands.")
     subtask_sub = subtask_parser.add_subparsers(dest="issue_command", required=True)
     subtask_list = subtask_sub.add_parser("list", help="List subtasks.")
@@ -232,6 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
     subtask_list.add_argument("--status", help="Filter by status.")
     subtask_list.add_argument("-q", "--query", help="Filter by workflow id/title/project name.")
     subtask_list.add_argument("--related", action="store_true", help="Only subtasks related to current user.")
+    subtask_list.add_argument("--mine", "--assigned-to-me", action="store_true", help="Only subtasks assigned to the current account.")
+    subtask_list.add_argument("--from", dest="date_from", help="Include subtasks active on or after YYYY-MM-DD.")
+    subtask_list.add_argument("--to", dest="date_to", help="Include subtasks active on or before YYYY-MM-DD.")
     subtask_list.add_argument("--today", action="store_true", help="Only subtasks created/started today.")
     subtask_list.add_argument("--limit", type=int, help="Maximum rows to return.")
     subtask_list.add_argument(
@@ -347,6 +383,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return run_history(args, provider)
     if args.command == "activity":
         return run_activity(args, provider)
+    if args.command == "report":
+        return run_report(args, config, provider)
+    if args.command in {"comment", "checklist", "attachment"}:
+        operation = f"{args.command}.list"
+        if args.dry_run:
+            return dry_run_response(operation, provider.preview_task_resources(args.command, args.id))
+        return {"ok": True, "operation": operation, "task_id": args.id,
+                **provider.list_task_resources(args.command, args.id)}
     raise ValidationError("Unsupported command.", {"command": args.command})
 
 
@@ -422,7 +466,7 @@ def run_logtime(args: argparse.Namespace, config: Config, provider: Provider) ->
                 default_name = default_gaps_csv_path(args.department, args.month)
                 csv_path = prompt_save_path_dialog(default_name)
                 if csv_path is None:
-                    print("Save dialog unavailable or cancelled - skipping CSV export.")
+                    print("Save dialog unavailable or cancelled - skipping CSV export.", file=sys.stderr)
                     return {"ok": True, "operation": "logtime.gaps", **result}
                 # The native Save dialog already asked to replace if this path exists.
             else:
@@ -549,6 +593,66 @@ def flatten_logtime_status(status_result: dict[str, Any], limit: int | None) -> 
     }
 
 
+def task_date_filters(args: argparse.Namespace) -> dict[str, str | None]:
+    dates: dict[str, str | None] = {}
+    for key, flag in (("date_from", "--from"), ("date_to", "--to")):
+        value = getattr(args, key, None)
+        try:
+            dates[key] = date_cls.fromisoformat(resolve_date_token(value)).isoformat() if value else None
+        except ValueError as exc:
+            raise ValidationError(f"{flag} must be a valid date (YYYY-MM-DD, today or yesterday).") from exc
+    if dates["date_from"] and dates["date_to"] and dates["date_from"] > dates["date_to"]:
+        raise ValidationError("--from must not be after --to.")
+    return dates
+
+
+def validate_work_scope(scope: str | None, project: str | None) -> None:
+    if scope == "project" and not project:
+        raise ValidationError("--scope project requires --project.")
+
+
+def run_report(args: argparse.Namespace, config: Config, provider: Provider) -> dict[str, Any]:
+    if args.report_command == "work":
+        project = args.project or config.project
+        validate_work_scope(args.scope, project)
+        filters = {
+            **task_date_filters(args),
+            "project": project,
+            "scope": args.scope,
+            "status": args.status,
+            "query": args.query,
+            "mine": True,
+            "recursive": args.recursive,
+            "assignee": config.assignee,
+        }
+        if args.dry_run:
+            return dry_run_response("report.work", provider.preview_list_tasks(filters))
+        tasks = provider.list_tasks(filters)
+        return {
+            "ok": True, "operation": "report.work", "scope": args.scope,
+            "date_from": filters["date_from"], "date_to": filters["date_to"],
+            "total_tasks": len(tasks),
+            "by_status": dict(Counter(str(task.get("status") or "(unknown)") for task in tasks)),
+            "by_project": dict(Counter(str(task.get("project_name") or task.get("project_id") or task.get("project") or "(unknown)") for task in tasks)),
+            "tasks": tasks,
+        }
+    try:
+        start = date_cls.fromisoformat(f"{args.month}-01")
+        end = start.replace(day=monthrange(start.year, start.month)[1])
+    except ValueError as exc:
+        raise ValidationError("--month must be YYYY-MM.") from exc
+    filters = {"date": end.isoformat(), "date_from": start.isoformat(), "days": end.day}
+    if args.dry_run:
+        return dry_run_response("report.timesheet", provider.preview_timesheet(filters))
+    result = provider.timesheet(filters)
+    by_day: dict[str, float] = {}
+    for entry in result.get("logtimes", []):
+        date = str(entry.get("date") or "")[:10]
+        by_day[date] = round(by_day.get(date, 0) + float(entry.get("hours") or 0), 2)
+    return {"ok": True, "operation": "report.timesheet", "month": args.month,
+            **result, "hours_by_date": dict(sorted(by_day.items()))}
+
+
 def run_subtask(args: argparse.Namespace, config: Config, provider: Provider) -> dict[str, Any]:
     filters = {
         "parent_id": args.parent_id or config.parent_id,
@@ -556,10 +660,12 @@ def run_subtask(args: argparse.Namespace, config: Config, provider: Provider) ->
         "status": args.status,
         "query": args.query,
         "related": args.related,
+        "mine": args.mine,
         "assignee": config.assignee,
         "today": args.today,
         "limit": args.limit,
         "recursive": args.recursive,
+        **task_date_filters(args),
     }
     if args.dry_run:
         return dry_run_response("subtask.list", provider.preview_list_subtasks(filters))
@@ -576,9 +682,14 @@ def run_task(
     if command == "create":
         return create_issue(args, config, provider, store, "task.create")
     if command == "list":
+        project = args.project or config.project
+        validate_work_scope(args.scope, project)
+        if args.scope and args.parent_id:
+            raise ValidationError("--scope and --parent-id cannot be combined; choose a list scope or a specific tree.")
         filters = {
-            "parent_id": args.parent_id or config.parent_id,
-            "project": args.project or config.project,
+            "parent_id": args.parent_id or (config.parent_id if not args.scope else None),
+            "project": project,
+            "scope": args.scope,
             "sprint": resolve_sprint(args.sprint, config),
             "status": args.status,
             "query": args.query,
@@ -587,6 +698,8 @@ def run_task(
             "today": args.today,
             "assignee": config.assignee,
             "limit": args.limit,
+            "recursive": args.recursive,
+            **task_date_filters(args),
         }
         if args.dry_run:
             return dry_run_response("task.list", provider.preview_list_tasks(filters))
@@ -940,6 +1053,22 @@ def emit_success(result: dict[str, Any], as_json: bool) -> None:
         return
     if operation == "logtime.gaps":
         print_timesheet_gaps(result)
+        return
+    if operation == "report.work":
+        print(f"{result['date_from']} → {result['date_to']} | Tasks: {result['total_tasks']}")
+        for status, count in result["by_status"].items():
+            print(f"- {status}: {count}")
+        print_task_rows(result["tasks"])
+        return
+    if operation == "report.timesheet":
+        print(f"Month: {result['month']} | Logs: {result['total_logs']} | Hours: {result['total_hours']:.2f}")
+        for date, hours in result["hours_by_date"].items():
+            print(f"- {date}: {hours:.2f}h")
+        return
+    if operation in {"comment.list", "checklist.list", "attachment.list"}:
+        print(f"{operation} | Task: {result['task_id']} | Items: {result['total_items']}")
+        for item in result["items"]:
+            print(json.dumps(item, ensure_ascii=False))
         return
     if result.get("idempotent"):
         print(f"{operation}: existing record")

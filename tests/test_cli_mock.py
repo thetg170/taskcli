@@ -161,6 +161,63 @@ class CliMockTests(unittest.TestCase):
         self.assertTrue(dry["dry_run"])
         self.assertEqual("task.list", dry["operation"])
 
+    def test_task_list_assigned_date_range(self) -> None:
+        self.run_cli(["task", "create", "--json", "--title", "Mine"])
+        self.run_cli(["task", "create", "--json", "--title", "Someone else's", "--assignee", "other"])
+        code, result = self.run_cli(["task", "list", "--assigned-to-me", "--from", "today", "--to", "today", "--json"])
+        self.assertEqual(0, code)
+        self.assertEqual(["Mine"], [task["title"] for task in result["tasks"]])
+        code, result = self.run_cli(["task", "list", "--mine", "--to", "2000-01-01", "--json"])
+        self.assertEqual(0, code)
+        self.assertEqual([], result["tasks"])
+
+    def test_invalid_date_range(self) -> None:
+        for argv in [
+            ["task", "list", "--from", "2026-02-30"],
+            ["task", "list", "--from", "2026-12-01", "--to", "2026-11-30"],
+            ["subtask", "list", "--to", "invalid"],
+        ]:
+            code, result = self.run_cli([*argv, "--json"])
+            self.assertEqual(2, code)
+            self.assertEqual("validation_error", result["error"]["code"])
+
+    def test_scopes_and_work_report(self) -> None:
+        _, created = self.run_cli(["task", "create", "--title", "Completed task", "--json"])
+        task_id = created["record"]["id"]
+        self.run_cli(["task", "done", task_id, "--json"])
+        self.run_cli(["task", "create", "--title", "Open task", "--json"])
+        _, result = self.run_cli(["task", "list", "--scope", "completed", "--mine", "--json"])
+        self.assertEqual(["Completed task"], [t["title"] for t in result["tasks"]])
+        _, result = self.run_cli(["report", "work", "--from", "today", "--to", "today", "--json"])
+        self.assertEqual(2, result["total_tasks"])
+        self.assertEqual({"Done": 1, "Open": 1}, result["by_status"])
+        self.assertEqual({"project-a": 2}, result["by_project"])
+
+    def test_monthly_report_uses_calendar_dates(self) -> None:
+        _, created = self.run_cli(["task", "create", "--title", "Time target", "--json"])
+        task_id = created["record"]["id"]
+        for date in ("2026-11-01", "2026-11-30", "2026-12-01"):
+            code, _ = self.run_cli(["log", task_id, "progress", "--time", "2h", "--date", date, "--json"])
+            self.assertEqual(0, code)
+        code, result = self.run_cli(["report", "timesheet", "--month", "2026-11", "--json"])
+        self.assertEqual(0, code)
+        self.assertEqual(4, result["total_hours"])
+        self.assertEqual({"2026-11-01": 2, "2026-11-30": 2}, result["hours_by_date"])
+        code, result = self.run_cli(["report", "timesheet", "--month", "2026-13", "--json"])
+        self.assertEqual(2, code)
+
+    def test_task_resource_commands(self) -> None:
+        _, created = self.run_cli(["task", "create", "--title", "Resources", "--json"])
+        task_id = created["record"]["id"]
+        for kind in ("comment", "checklist", "attachment"):
+            code, result = self.run_cli([kind, "list", task_id, "--json"])
+            self.assertEqual(0, code)
+            self.assertEqual(f"{kind}.list", result["operation"])
+            self.assertEqual([], result["items"])
+            self.assertEqual(0, result["total_items"])
+            code, result = self.run_cli([kind, "list", task_id, "--dry-run", "--json"])
+            self.assertEqual(0, code)
+            self.assertTrue(result["dry_run"])
     def test_update_progress_for_task_and_subtask(self) -> None:
         _, task = self.run_cli(["task", "create", "--json", "--title", "Task progress"])
         task_id = task["record"]["id"]

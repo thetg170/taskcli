@@ -53,13 +53,13 @@ def load_config(
     env: dict[str, str] | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> Config:
-    env = env or os.environ
+    env = os.environ if env is None else env
     load_dotenv(env)
     path = Path(config_path or env.get("TASKCLI_CONFIG") or default_config_path()).expanduser()
     data = read_toml(path)
     provider_section = data.get("provider", {})
     provider_data = provider_section if isinstance(provider_section, dict) else {}
-    provider_name = provider_data.get("name") if provider_data else provider_section
+    provider_name = provider_data.get("name") if isinstance(provider_section, dict) else provider_section
     defaults_data = data.get("defaults", {})
     beca_data = data.get("beca", {})
     mock_data = data.get("mock", {})
