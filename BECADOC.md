@@ -265,9 +265,9 @@ External-id cho log: `<YYYY-MM-DD>:<WORKFLOW_ID>:progress` (vd `2026-07-02:14233
 
 ## 7. Dùng với agent
 
-### Báo cáo tuần theo dự án
+### Báo cáo sprint theo dự án
 
-Khi người dùng yêu cầu báo cáo tuần, lấy đúng khoảng ngày (mặc định tuần làm việc thứ Hai–thứ Sáu hiện tại nếu không chỉ định). Xác minh tài khoản bằng `taskcli whoami --json`, truy vấn `taskcli report work --from <ngày> --to <ngày> --json`, đối chiếu logtime bằng `taskcli logtime timesheet --date <ngày cuối> --days 5 --json` cho tuần làm việc đầy đủ (điều chỉnh khoảng tra cứu nếu khác), rồi xem `taskcli task show <id> --json` cho các task cần xác minh tiến độ, deadline và dự án. Bổ sung task có logtime trong tuần nhưng bị bỏ sót ở danh sách task. Nhóm theo dự án; task cha chỉ làm tiêu đề nhóm nếu không đại diện việc riêng để tránh đếm trùng.
+Khi người dùng yêu cầu báo cáo, lấy đúng khoảng ngày được yêu cầu. Mặc định báo cáo theo sprint 2 tuần, thứ Hai tuần đầu đến thứ Sáu tuần thứ hai, mốc sprint 23/11–04/12/2026, lặp lại mỗi 14 ngày. Nếu người dùng chỉ định tuần hoặc khoảng ngày khác thì ưu tiên yêu cầu đó. Xác minh tài khoản bằng `taskcli whoami --json`, truy vấn `taskcli report work --from <ngày> --to <ngày> --json`, đối chiếu logtime bằng `taskcli logtime timesheet --date <ngày cuối> --days 10 --json` cho sprint đầy đủ (điều chỉnh khoảng tra cứu nếu khác), rồi xem `taskcli task show <id> --json` cho các task cần xác minh tiến độ, deadline và dự án. Bổ sung task có logtime trong sprint nhưng bị bỏ sót ở danh sách task. Nhóm theo dự án; task cha chỉ làm tiêu đề nhóm nếu không đại diện việc riêng để tránh đếm trùng. Với sprint chưa kết thúc, báo cáo kết quả thực tế đến ngày hiện tại, không giả định kết quả của các ngày tương lai; các task dự kiến vẫn có thể liệt kê với tiến độ tương ứng.
 
 **Mẫu output bắt buộc:**
 
