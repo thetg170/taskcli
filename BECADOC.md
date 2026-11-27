@@ -272,23 +272,33 @@ Khi người dùng yêu cầu báo cáo tuần, lấy đúng khoảng ngày (m�
 **Mẫu output bắt buộc:**
 
 ```text
-BÁO CÁO CÔNG VIỆC TUẦN DD/MM – DD/MM/YYYY
-Nhân viên: <họ tên>
-
 Dự án 1: <tên dự án>
+
 Vai trò: <vai trò>
 Task hiện tại:
-1. <Task thứ nhất>.
-2. <Task thứ hai>.
+1. <Tên đầy đủ task thứ nhất>
+2. <Tên đầy đủ task thứ hai>
 
 Kết quả: <kết quả thực tế>.
 Tiến độ: <trạng thái hoặc phần trăm xác minh được>.
 Vướng mắc: <vướng mắc hoặc Chưa ghi nhận>.
 Việc tiếp theo: <kế hoạch tiếp theo>.
 Deadline: <ngày/tháng theo từng task nếu khác nhau>.
+
+Dự án 2: <tên dự án tiếp theo>
+
+Vai trò: <vai trò>
+Task hiện tại:
+1. <Tên đầy đủ task thứ nhất>
+
+Kết quả: <kết quả thực tế>.
+Tiến độ: <trạng thái hoặc phần trăm xác minh được>.
+Vướng mắc: <vướng mắc hoặc Chưa ghi nhận>.
+Việc tiếp theo: <kế hoạch tiếp theo>.
+Deadline: <ngày/tháng>.
 ```
 
-Trong Markdown, đánh số từng task riêng, bắt đầu lại từ 1 ở mỗi dự án. Các dòng Vai trò, Kết quả, Tiến độ, Vướng mắc, Việc tiếp theo, Deadline phải trình bày gọn; dùng hai dấu cách cuối dòng để xuống dòng trong cùng đoạn, không để dòng trống xen giữa các trường. Có thể in đậm tên trường và tiêu đề dự án. Không dùng bảng hoặc bullet cho các trường còn lại. Không tạo phần trăm, deadline hoặc kết quả chưa được xác minh; khi thiếu dữ liệu ghi "Chưa ghi nhận". Không thêm phần tổng hợp hoặc lời giải thích ngoài mẫu trừ khi người dùng yêu cầu.
+Trả về trực tiếp các dự án theo mẫu văn bản thuần, bắt đầu ngay bằng `Dự án 1: ...`. Không thêm tiêu đề báo cáo, tên nhân viên, bảng, emoji, lời mở đầu hay tổng kết. Tiêu đề dự án và nhãn trường không in đậm. Giữ nguyên tên đầy đủ của task trên BecaWork (chỉ chỉnh lỗi chính tả rõ ràng nếu người dùng yêu cầu), không rút gọn tên; đánh số từng task riêng, bắt đầu lại từ 1 ở mỗi dự án. Để đúng một dòng trống sau tiêu đề dự án, sau danh sách task và giữa các dự án. Các dòng Vai trò, Task hiện tại, Kết quả, Tiến độ, Vướng mắc, Việc tiếp theo, Deadline xuống dòng sát nhau như mẫu; với Markdown dùng hai dấu cách cuối dòng để giữ ngắt dòng. Nội dung kết quả ngắn gọn, không gộp nhiều dự án hoặc tự tạo phần trăm, deadline hay kết quả chưa được xác minh; giá trị người dùng cung cấp hoặc hiệu chỉnh được ưu tiên hơn dữ liệu cũ. Khi thiếu dữ liệu ghi "Chưa ghi nhận". Không sao chép số liệu hoặc tên task của tuần mẫu sang tuần khác.
 
 Mục tiêu: agent trả lời được *"tôi có những task gì?"*, *"hôm nay còn task nào chưa logtime?"* rồi *"log giùm task X 8 tiếng: ..."*.
 
