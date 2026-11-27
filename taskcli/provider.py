@@ -59,6 +59,13 @@ class Provider(ABC):
     def timesheet_gaps(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"month": filters.get("month"), "department": filters.get("department"), "workdays": [], "people": []}
 
+    @abstractmethod
+    def list_task_resources(self, kind: str, task_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def preview_task_resources(self, kind: str, task_id: str) -> dict[str, Any]:
+        return {"operation": f"{kind}.list", "task_id": task_id}
+
     def preview_list_projects(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "project.list", "filters": filters}
 

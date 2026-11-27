@@ -5,16 +5,18 @@ import os
 import re
 import time
 from calendar import monthrange
+from collections import deque
 from datetime import date as date_cls, timedelta
 from html import unescape
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 from beca_work.actions import (
     MY_WORK_COUNT_BY_PROJECT_URL,
     SAVE_FORM_URL,
+    BecaResponseError,
     build_child_work_context,
     check_apply_sla_in_project,
     check_over_logtime,
@@ -28,6 +30,9 @@ from beca_work.actions import (
     get_logtime,
     get_next_statuses,
     get_project_id,
+    get_project_works,
+    get_task_resources,
+    task_resource_request,
     get_statuses_by_project,
     get_department_leave_calendar,
     get_department_timesheet_report,
@@ -51,8 +56,14 @@ from beca_work.actions import (
 from beca_work.client import BecaClient
 from taskcli.config import Config
 from taskcli.errors import AuthError, NetworkError, ProviderError, RateLimitError
-from taskcli.models import TaskCreate, TaskUpdate, WorklogCreate, normalize_progress_value
+from taskcli.models import TaskCreate, TaskUpdate, WorklogCreate, normalize_progress_value, task_matches_dates
 from taskcli.provider import Provider
+
+WORK_SCOPE_TYPES = {
+    "active": ("Xử lý",),
+    "completed": ("Việc đã xử lý",),
+    "all": ("Xử lý", "Việc đã xử lý"),
+}
 
 
 class BecaProvider(Provider):
@@ -61,9 +72,15 @@ class BecaProvider(Provider):
     def __init__(self, config: Config) -> None:
         self.config = config
         self.client: BecaClient | None = None
+        self._user: dict[str, Any] | None = None
+
+    def _current_user(self) -> dict[str, Any]:
+        if self._user is None:
+            self._user = self._read_call(get_current_user, self._client())
+        return self._user
 
     def whoami(self) -> dict[str, Any]:
-        user = self._call(get_current_user, self._client())
+        user = self._current_user()
         assignee_id = person_ref(user.get("id"))
         return {
             "id": assignee_id,
@@ -196,11 +213,30 @@ class BecaProvider(Provider):
             "filters": filters,
         }
 
+    def _work_pages(self, work_type: str, row_number: int = 100) -> Iterator[dict[str, Any]]:
+        seen: set[str] = set()
+        page_number = 1
+        while True:
+            page = self._read_call(
+                get_work_in_process, self._client(), False,
+                page_number=page_number, row_number=row_number, work_type=work_type,
+            )
+            count = 0
+            for work in page:
+                work_id = str(normalize_work(work)["workflow_id"])
+                if work_id and work_id not in seen:
+                    seen.add(work_id)
+                    count += 1
+                    yield work
+            if len(page) < row_number:
+                break
+            if not count:
+                raise ProviderError("Beca pagination returned a repeated page.", {"page": page_number, "type": work_type})
+            page_number += 1
+
     def list_stories(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
-        row_number = str(filters.get("row_number") or 100)
-        with patched_env({"WORK_ROW_NUMBER": row_number}):
-            works = self._call(get_work_in_process, self._client(), False)
-        rows = [normalize_work(work) for work in works]
+        row_number = int(filters.get("row_number") or 100)
+        rows = [normalize_work(work) for work in self._work_pages("Xử lý", row_number)]
         project_id = str(filters.get("project") or self.config.project or "").strip()
         status = str(filters.get("status") or "").strip().casefold()
         query = str(filters.get("query") or "").strip().casefold()
@@ -236,25 +272,110 @@ class BecaProvider(Provider):
         }
 
     def list_tasks(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        limit = filters.get("limit")
+        if limit is not None and int(limit) <= 0:
+            return []
         filters = self._with_related_user(filters)
         parent_id = str(filters.get("parent_id") or "").strip()
-        if parent_id:
-            rows = [
-                child_task_row(work, parent_id)
-                for work in self._call(get_work_children, self._client(), parent_id)
-            ]
-            return filter_task_rows(rows, filters)
-
-        story_filters = {**filters, "limit": None, "status": None, "query": None, "related": False}
-        stories = self.list_stories(story_filters)
+        if filters.get("scope") and not parent_id:
+            return self._list_scoped_tasks(filters)
+        # Child filters must not be applied to ancestors: a child can start
+        # today even when its parent started months ago.
+        story_filters = {**filters, "limit": None, "status": None, "query": None,
+                         "related": False, "mine": False, "today": False}
+        stories = [{"workflow_id": parent_id}] if parent_id else self.list_stories(story_filters)
         rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        child_filters = {**filters, "limit": None}
         for story in stories:
             story_id = str(story.get("workflow_id") or "").strip()
             if not story_id:
                 continue
-            children = self._call(get_work_children, self._client(), story_id)
-            rows.extend(child_task_row(child, story_id) for child in children)
-        return filter_task_rows(rows, filters)
+            children = self._iter_descendants(story_id) if filters.get("recursive") else self._child_rows(story_id)
+            for row in children:
+                work_id = str(row.get("workflow_id") or "")
+                if work_id and work_id not in seen and filter_task_rows([row], child_filters):
+                    seen.add(work_id)
+                    rows.append(row)
+                    if limit is not None and len(rows) >= int(limit):
+                        return rows
+        return rows
+
+    def _scope_candidates(self, filters: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        scope = filters["scope"]
+        project = str(filters.get("project") or "").strip()
+        if scope == "project":
+            if not project:
+                raise ProviderError("Project scope requires a project id.")
+            for work in self._read_call(get_project_works, self._client(), project):
+                yield child_task_row(work, str(work.get("parentId") or ""))
+            return
+        if scope not in WORK_SCOPE_TYPES:
+            raise ProviderError("Unsupported work scope.", {"scope": scope})
+        roots: list[str] = []
+        seen: set[str] = set()
+        for work_type in WORK_SCOPE_TYPES[scope]:
+            for work in self._work_pages(work_type):
+                row = child_task_row(work, str(work.get("parentId") or ""))
+                workflow_id = row["workflow_id"]
+                if not workflow_id or workflow_id in seen:
+                    continue
+                if project and row["project_id"] != project:
+                    continue
+                seen.add(workflow_id)
+                roots.append(workflow_id)
+                yield row
+        # Current and processed lists can overlap and can already contain
+        # descendants. Expand each parent only once across both sources.
+        expanded: set[str] = set()
+        queue = deque(roots)
+        while queue:
+            root = queue.popleft()
+            if root in expanded:
+                continue
+            expanded.add(root)
+            for row in self._child_rows(root):
+                workflow_id = row["workflow_id"]
+                if not workflow_id:
+                    continue
+                if workflow_id not in seen:
+                    seen.add(workflow_id)
+                    yield row
+                if filters.get("recursive") and workflow_id not in expanded:
+                    queue.append(workflow_id)
+
+    def _list_scoped_tasks(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        results = []
+        seen: set[str] = set()
+        basic_filters = {**filters, "mine": False, "related": False, "limit": None}
+        full_filters = {**filters, "limit": None}
+        for row in self._scope_candidates(filters):
+            workflow_id = row["workflow_id"]
+            if not workflow_id or workflow_id in seen:
+                continue
+            seen.add(workflow_id)
+            if not filter_task_rows([row], basic_filters):
+                continue
+            # Flat lists omit userPartner, so never infer assignee from
+            # isMyWork, userIds, or related participants.
+            if (filters.get("mine") or filters.get("related")) and not (
+                row["related_user_ids"] or row["related_user_emails"]
+            ):
+                detail = self._read_call(get_work_detail, self._client(), workflow_id, False)
+                if not isinstance(detail, dict) or not detail.get("userWorkflowId"):
+                    raise ProviderError("Beca did not return task detail.", {"task_id": workflow_id})
+                row = child_task_row(detail, str(detail.get("parentId") or row.get("parent_id") or ""))
+            if filter_task_rows([row], full_filters):
+                results.append(row)
+                if filters.get("limit") is not None and len(results) >= int(filters["limit"]):
+                    break
+        return results
+
+    def _child_rows(self, parent_id: str) -> list[dict[str, Any]]:
+        return [
+            child_task_row(work, parent_id)
+            for work in self._read_call(get_work_children, self._client(), parent_id)
+        ]
 
     def preview_list_tasks(self, filters: dict[str, Any]) -> dict[str, Any]:
         if filters.get("parent_id"):
@@ -262,6 +383,16 @@ class BecaProvider(Provider):
                 "method": "GET",
                 "endpoint": "Work_GetWorkChild",
                 "query": {"WorkflowCode": filters.get("parent_id"), "newLayout": "true"},
+                "filters": filters,
+            }
+        if filters.get("scope"):
+            scope = filters["scope"]
+            return {
+                "operation": "task.list",
+                "endpoint": "Work_GetAllByProject" if scope == "project" else "Work_GetWorkInProcess",
+                "types": list(WORK_SCOPE_TYPES.get(scope, ())),
+                "detail_for_missing_roles": "Work_DetailInfo",
+                "per_parent": None if scope == "project" else "Work_GetWorkChild",
                 "filters": filters,
             }
         return {
@@ -284,38 +415,47 @@ class BecaProvider(Provider):
                 ]
             return filter_task_rows(rows, filters)
 
+        if filters.get("mine"):
+            # An assigned descendant may have a parent assigned to someone else.
+            tasks = self.list_tasks({**filters, "limit": None, "status": None, "query": None,
+                                     "related": False, "mine": False, "today": False,
+                                     "date_from": None, "date_to": None, "recursive": False})
+            rows = []
+            for task in tasks:
+                rows.extend(self._list_descendants(str(task["workflow_id"])))
+            return filter_task_rows(rows, filters)
+
         if filters.get("related"):
             rows: list[dict[str, Any]] = []
             for _task, descendants in self._related_tasks_with_descendants(filters):
                 rows.extend(descendants)
             return filter_task_rows(rows, {**filters, "related": False})
 
-        task_filters = {**filters, "limit": None, "status": None, "query": None, "related": False}
+        task_filters = {**filters, "limit": None, "status": None, "query": None, "related": False,
+                        "today": False, "date_from": None, "date_to": None, "recursive": False}
         tasks = self.list_tasks(task_filters)
         rows = []
         for task in tasks:
             task_id = str(task.get("workflow_id") or "").strip()
             if not task_id:
                 continue
-            children = self._call(get_work_children, self._client(), task_id)
-            rows.extend(child_task_row(child, task_id) for child in children)
+            rows.extend(self._list_descendants(task_id) if filters.get("recursive") else self._child_rows(task_id))
         return filter_task_rows(rows, filters)
 
     def _list_descendants(self, root_id: str) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+        return list(self._iter_descendants(root_id))
+
+    def _iter_descendants(self, root_id: str) -> Iterator[dict[str, Any]]:
         seen: set[str] = {root_id}
-        queue = [root_id]
+        queue = deque([root_id])
         while queue:
-            current_id = queue.pop(0)
-            children = self._call(get_work_children, self._client(), current_id)
-            for child in children:
-                row = child_task_row(child, current_id)
-                rows.append(row)
+            current_id = queue.popleft()
+            for row in self._child_rows(current_id):
                 child_id = str(row.get("workflow_id") or "").strip()
                 if child_id and child_id not in seen:
                     seen.add(child_id)
                     queue.append(child_id)
-        return rows
+                    yield row
 
     def _related_tasks_with_descendants(
         self, filters: dict[str, Any]
@@ -326,7 +466,8 @@ class BecaProvider(Provider):
         its own userPartner entry for the assignee even though it belongs to
         a task that does, so re-checking relatedness on each subtask would
         drop real items."""
-        related_task_filters = {**filters, "limit": None, "status": None, "query": None, "project": None}
+        related_task_filters = {**filters, "limit": None, "status": None, "query": None, "project": None,
+                                "today": False, "date_from": None, "date_to": None, "recursive": False}
         tasks = self.list_tasks(related_task_filters)
         result: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         for task in tasks:
@@ -340,7 +481,8 @@ class BecaProvider(Provider):
         """Items that logtime is actually recorded against: every descendant
         subtask (any depth) if a task has subtasks, otherwise the task itself
         (per convention, a bare task with no subtask is logged directly)."""
-        filters = self._with_related_user(filters)
+        # --mine on logtime refers to the author of the logs, not the assignee.
+        filters = self._with_related_user({**filters, "mine": False})
         rows: list[dict[str, Any]] = []
         for task, descendants in self._related_tasks_with_descendants(filters):
             rows.extend(descendants if descendants else [task])
@@ -363,9 +505,9 @@ class BecaProvider(Provider):
         }
 
     def _with_related_user(self, filters: dict[str, Any]) -> dict[str, Any]:
-        if not filters.get("related"):
+        if not (filters.get("related") or filters.get("mine")):
             return filters
-        user = self._call(get_current_user, self._client())
+        user = self._current_user()
         return {
             **filters,
             "related_user_id": person_ref(user.get("id")),
@@ -374,7 +516,7 @@ class BecaProvider(Provider):
 
     def logtime_status(self, filters: dict[str, Any]) -> dict[str, Any]:
         tasks = self._list_loggable_items(filters)
-        user = self._call(get_current_user, self._client())
+        user = self._current_user()
         user_ref = person_ref(user.get("id"))
         user_email = str(user.get("email") or "").strip().casefold()
         date_value = str(filters.get("date") or "")
@@ -416,7 +558,7 @@ class BecaProvider(Provider):
         logs = raw_logs if isinstance(raw_logs, list) else []
         date_value = str(filters.get("date") or "").strip()
         if filters.get("mine"):
-            user = self._call(get_current_user, self._client())
+            user = self._current_user()
             user_ref = person_ref(user.get("id"))
             user_email = str(user.get("email") or "").strip().casefold()
             logs = [log for log in logs if log_matches_user(log, user_ref, user_email)]
@@ -445,16 +587,20 @@ class BecaProvider(Provider):
         # have logtime, so a plain calendar-day window would waste slots on
         # Sat/Sun and under-report actual work coverage. A single-day lookup
         # (the default) still checks exactly the date given, weekend or not.
-        start = workday_window_start(end, days) if days > 1 else end
+        start = date_cls.fromisoformat(filters["date_from"]) if filters.get("date_from") else (
+            workday_window_start(end, days) if days > 1 else end
+        )
+        if filters.get("date_from"):
+            days = (end - start).days + 1
 
-        user = self._call(get_current_user, self._client())
+        user = self._current_user()
         user_id = str(user.get("id") or "").strip()
 
-        months = {(start.year, start.month), (end.year, end.month)}
         raw: list[dict[str, Any]] = []
-        for year, month in months:
-            month_anchor = date_cls(year, month, 1).isoformat()
-            raw.extend(self._call(get_timesheet_report, self._client(), month_anchor, user_id))
+        month_anchor = start.replace(day=1)
+        while month_anchor <= end:
+            raw.extend(self._read_call(get_timesheet_report, self._client(), month_anchor.isoformat(), user_id))
+            month_anchor = (month_anchor + timedelta(days=32)).replace(day=1)
 
         all_entries = [entry for entry in (parse_timesheet_row(row) for row in raw) if entry]
         entries = sorted(
@@ -478,6 +624,13 @@ class BecaProvider(Provider):
             "query": {"date": filters.get("date"), "projectName": "-1", "email": "<current user P: id>", "department": ""},
             "filters": filters,
         }
+
+    def list_task_resources(self, kind: str, task_id: str) -> dict[str, Any]:
+        return self._read_call(get_task_resources, self._client(), kind, task_id)
+
+    def preview_task_resources(self, kind: str, task_id: str) -> dict[str, Any]:
+        endpoint, query = task_resource_request(kind, task_id)
+        return {"method": "GET", "endpoint": endpoint, "query": query}
 
     def timesheet_gaps(self, filters: dict[str, Any]) -> dict[str, Any]:
         month_str, year_str = str(filters.get("month")).split("/")
@@ -778,6 +931,8 @@ class BecaProvider(Provider):
     def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
+        except BecaResponseError as exc:
+            raise ProviderError(str(exc)) from exc
         except HTTPError as exc:
             if exc.code in {401, 403}:
                 raise AuthError("Beca authentication failed.", {"status": exc.code}) from exc
@@ -788,6 +943,17 @@ class BecaProvider(Provider):
             raise NetworkError("Cannot reach Beca API.", {"reason": str(exc.reason)}) from exc
         except TimeoutError as exc:
             raise NetworkError("Beca API request timed out.") from exc
+
+    def _read_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Retry a transient read once; never automatically retry writes."""
+        try:
+            return self._call(fn, *args, **kwargs)
+        except NetworkError as exc:
+            status = exc.details.get("status")
+            if status is not None and not 500 <= status < 600:
+                raise
+            time.sleep(0.5)
+            return self._call(fn, *args, **kwargs)
 
 
 @contextmanager
@@ -860,6 +1026,10 @@ def child_task_row(work: dict[str, Any], parent_id: str) -> dict[str, Any]:
     row["related_user_ids"] = related_user_ids(work)
     row["related_user_emails"] = related_user_emails(work)
     row["related_user_types"] = related_user_types(work)
+    assignees = [user for user in work.get("userPartner") or []
+                 if str(user.get("userType") or "").casefold() == "nguoixuly"]
+    row["assignee_ids"] = list(dict.fromkeys(person_ref(user.get("id")) for user in assignees if user.get("id")))
+    row["assignee_emails"] = list(dict.fromkeys(str(user["email"]) for user in assignees if user.get("email")))
     return row
 
 
@@ -883,6 +1053,12 @@ def filter_task_rows(rows: list[dict[str, Any]], filters: dict[str, Any]) -> lis
                 and related_user_email in [str(value).casefold() for value in row.get("related_user_emails") or []]
             )
         ]
+    if filters.get("mine"):
+        rows = [
+            row for row in rows
+            if (related_user_id and related_user_id in [str(value).casefold() for value in row.get("assignee_ids") or []])
+            or (related_user_email and related_user_email in [str(value).casefold() for value in row.get("assignee_emails") or []])
+        ]
     if query:
         rows = [
             row
@@ -892,9 +1068,17 @@ def filter_task_rows(rows: list[dict[str, Any]], filters: dict[str, Any]) -> lis
             or query in str(row.get("project_name", "")).casefold()
             or query in str(row.get("parent_id", "")).casefold()
         ]
-    if filters.get("today"):
-        today = time.strftime("%Y-%m-%d")
-        rows = [row for row in rows if str(row.get("start", "")).startswith(today)]
+    rows = [
+        row for row in rows
+        if task_matches_dates(
+            row.get("start"),
+            row.get("end") or (
+                row.get("completed_at")
+                if str(row.get("status") or "").casefold() in {"done", "feedback", "reject"} else None
+            ),
+            filters,
+        )
+    ]
     return limit_rows(rows, filters.get("limit"))
 
 

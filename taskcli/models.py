@@ -96,6 +96,28 @@ def resolve_date_token(value: str | None) -> str:
     return value
 
 
+def task_matches_dates(start: object, end: object, filters: dict[str, Any]) -> bool:
+    """Inclusive overlap with planned task dates; a missing end is open-ended."""
+    lower = filters.get("date_from")
+    upper = filters.get("date_to")
+    today = filters.get("today")
+    if not (lower or upper or today):
+        return True
+    try:
+        start_date = date.fromisoformat(str(start or "")[:10])
+        end_date = date.fromisoformat(str(end)[:10]) if end and (lower or upper) else None
+    except ValueError:
+        return False
+    if today and start_date != date.today():
+        return False
+    if end_date and end_date < start_date:
+        return False
+    return not (
+        (upper and start_date.isoformat() > upper)
+        or (lower and end_date and end_date.isoformat() < lower)
+    )
+
+
 def normalize_progress_value(value: object) -> str:
     raw_value = str(value).strip().removesuffix("%").strip()
     progress = int(raw_value)

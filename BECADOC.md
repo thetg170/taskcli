@@ -46,6 +46,8 @@ Những cờ này dùng ở khắp nơi nên không lặp lại ở từng lện
 - **`--json`** — mọi lệnh đều hỗ trợ; agent **luôn** dùng. JSON ra stdout, log/debug ra stderr.
 - **`--dry-run`** — mọi lệnh *ghi* đều hỗ trợ. Xem trước payload, đúng rồi **bỏ `--dry-run`** để ghi thật. Dry-run không đụng BecaWork, không ghi idempotency store.
 - **`--related`** — chỉ lấy item có user đăng nhập trong danh sách xử lý/giao/theo dõi.
+- **`--mine` / `--assigned-to-me`** — với `task list` và `subtask list`, chỉ lấy item mà tài khoản đang đăng nhập là **Người xử lý**; không tính chỉ giao việc hoặc theo dõi. Kiểm tra theo từng người trong `userPartner`, không dùng cờ `isMyWork`.
+- **`--from YYYY-MM-DD --to YYYY-MM-DD`** — với `task list` và `subtask list`, lấy các task có khoảng thời gian thực hiện giao với khoảng lọc (bao gồm cả hai ngày). Nếu task không có deadline nhưng có ngày hoàn thành (`dateComplete`) và trạng thái Done/Feedback/Reject, dùng ngày hoàn thành làm mốc kết thúc; nếu không có cả hai, coi như chưa xác định hạn. Task không có ngày bắt đầu hợp lệ không được tính khi lọc ngày. Có thể chỉ truyền một đầu hoặc dùng `today`, `yesterday`. Đây là khoảng thực hiện, không phải ngày được assign hay ngày logtime.
 - **`--query "..."`** — lọc theo tên project/story/task thay vì kéo quá nhiều dòng.
 - **`--external-id`** + idempotency — gọi lại cùng key trả record cũ, không tạo trùng (chi tiết §9).
 - **Assignee mặc định** = user đang đăng nhập; truyền `--assignee` nếu muốn khác.
@@ -64,6 +66,9 @@ project list → story list → task list → subtask list
 | `story list --project <id>` | story/work trong project (alias: `work list`) |
 | `task list` | task con của **mọi** story/work |
 | `task list --parent-id <WORKFLOW_ID>` | task con dưới **một** story/work |
+| `task list --mine --scope all --from 2026-11-01 --to today --recursive` | task hiện tại và lịch sử, gồm các cấp con được giao cho tài khoản hiện tại |
+| `task list --mine --scope completed` | công việc từ nhóm "Việc đã xử lý" và con trực tiếp |
+| `task list --scope project --project <ID>` | danh sách công việc theo dự án, từ snapshot trực tiếp |
 | `subtask list` | subtask của **mọi** task |
 | `subtask list --parent-id <TASK_WORKFLOW_ID>` | subtask dưới **một** task (chỉ 1 cấp trực tiếp) |
 | `subtask list --parent-id <ID> --recursive` | subtask dưới **một** task, gồm cả subtask lồng nhau (subtask của subtask, mọi cấp) |
@@ -75,13 +80,50 @@ project list → story list → task list → subtask list
 
 Thêm `--related`, `--query`, `--limit`, `--status`, `--json` tùy nhu cầu.
 
+Ví dụ lọc task được giao:
+
+```bash
+uv run taskcli task list --mine --from 2026-11-01 --to today --json
+uv run taskcli task list --mine --recursive --status "In Progress" --json
+uv run taskcli subtask list --assigned-to-me --from 2026-11-01 --to today --json
+uv run taskcli task list --mine --scope all --recursive --from 2026-11-01 --to today --json
+uv run taskcli task list --scope project --project 1330587 --mine --json
+```
+
+`task list` không có `--scope` giữ nguyên hành vi cũ: chỉ lấy con trực tiếp dưới các story/work nhóm "Xử lý"; thêm `--recursive` để tìm item lồng sâu. Khi truyền scope, CLI tính cả record cấp gốc:
+
+| Scope | Nguồn dữ liệu |
+|---|---|
+| `active` | nhóm "Xử lý" |
+| `completed` | nhóm "Việc đã xử lý" (không đồng nghĩa status Done; dùng `--status Done` nếu cần) |
+| `all` | hợp của hai nhóm trên, loại trùng ID |
+| `project` | snapshot theo project do `Work_GetAllByProject` trả về; yêu cầu `--project` |
+
+Các scope active/completed/all lấy các record gốc và con trực tiếp; thêm `--recursive` để duyệt sâu. Scope project dùng snapshot phẳng và không cần đệ quy. Khi lọc người xử lý, CLI tra chi tiết record thiếu thông tin vai trò, không suy luận từ cờ `isMyWork` hoặc danh sách người liên quan. Scope project không bảo đảm có mọi record lịch sử đã xóa hoặc không còn quyền xem. Không kết hợp `--scope` với `--parent-id`; dùng parent để tra một cây cụ thể. `subtask list --mine` không có parent sẽ tìm các cấp con sâu dưới task; nếu chỉ định parent, thêm `--recursive` để tìm sâu hơn cấp trực tiếp.
+
+### Báo cáo và tài nguyên của task
+
+```bash
+uv run taskcli report work --from 2026-11-01 --to today --json
+uv run taskcli report work --scope project --project 1330587 --from 2026-11-01 --to today --json
+uv run taskcli report timesheet --month 2026-11 --json
+uv run taskcli comment list 1551755 --json
+uv run taskcli checklist list 1551755 --json
+uv run taskcli attachment list 1551755 --json
+```
+
+- `report work`: tổng hợp task được giao cho tài khoản hiện tại theo trạng thái và dự án, kèm danh sách chi tiết. Mặc định dùng scope all (record gốc + con trực tiếp); thêm `--recursive` để bao gồm mọi tầng con. Quét lịch sử đệ quy diện rộng có thể mất hơn một phút; nên giới hạn bằng `--project` nếu cần.
+- `report timesheet`: tổng số log, tổng giờ và giờ theo từng ngày trong tháng lịch (gồm cả cuối tuần nếu có log), dùng API TimeSheetReport đã xác minh.
+- Comment, checklist và attachment chỉ dùng API đọc và trả `items`, `total_items`; attachment chỉ liệt kê metadata, không tải file.
+- Swagger lịch sử: [work.becawork.vn/swagger/v1/swagger.json](https://work.becawork.vn/swagger/v1/swagger.json). URL không còn trả JSON tại lần kiểm tra 27/11/2026; báo cáo sử dụng các API đã xác thực thay vì phụ thuộc vào schema báo cáo chưa xác minh.
+
 Field trả về theo operation (đều bọc trong `{"ok":true,"operation":...,"<mảng>":[...]}`):
 
 | operation | field chính mỗi item |
 |---|---|
 | `project.list` | `project_id`, `project_name`, `count` |
 | `story.list` | `workflow_id`, `title`, `project_id`, `project_name`, `status` |
-| `task.list` | `workflow_id`, `title`, `project_id`, `status`, `category` |
+| `task.list` | `workflow_id`, `title`, `project_id`, `status`, `category`, `start`, `end`, `assignee_ids`, `assignee_emails` |
 | `subtask.list` | `workflow_id`, `title`, `project_id`, `status`, `parent_id`, `category` |
 | `logtime.list` | `date`, `hours`, `action`, `description` (+ `total_logs`, `total_hours`) |
 
@@ -230,6 +272,7 @@ Mục tiêu: agent trả lời được *"tôi có những task gì?"*, *"hôm n
 | Câu hỏi | Lệnh dùng | Không dùng |
 |---|---|---|
 | "Tôi có task gì" / "task đang xử lý" | `task list --related --json` + `subtask list --related --json` | `logtime status` (đây là câu hỏi về **worklog**, không phải câu hỏi về **danh sách task**) |
+| "Task được assign cho tôi trong khoảng ngày" | `task list --mine --recursive --from <ngày> --to <ngày> --json` | `--related` (bao gồm cả vai trò không xử lý) |
 | "Hôm nay logtime chưa / đủ giờ chưa" (số giờ tổng của 1 ngày) | `logtime timesheet --date today --json` | `logtime status` — chỉ quét task related, có thể báo sai nếu log ở project khác (xem §3) |
 | "Task nào chưa log" (muốn biết chưa log lên **task nào**, không chỉ tổng giờ) | `logtime status --date today --json` | |
 
