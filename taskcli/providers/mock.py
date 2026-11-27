@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from taskcli.errors import ProviderError
-from taskcli.models import TaskCreate, TaskUpdate, WorklogCreate, now_iso
+from taskcli.models import TaskCreate, TaskUpdate, WorklogCreate, now_iso, task_matches_dates
 from taskcli.provider import Provider
 
 
@@ -32,7 +33,7 @@ class MockProvider(Provider):
             "sprint": request.sprint,
             "labels": request.labels,
             "estimate": request.estimate,
-            "assignee": request.assignee,
+            "assignee": request.assignee or self.whoami()["assignee_id"],
             "project": request.project,
             "parent_id": request.parent_id,
             "status": "Open",
@@ -196,10 +197,26 @@ class MockProvider(Provider):
         query = str(filters.get("query") or "").casefold()
         mine = filters.get("mine")
         related = filters.get("related")
-        assignee = filters.get("assignee")
-        today = filters.get("today")
+        assignee = filters.get("assignee") or self.whoami()["assignee_id"]
+        scope = filters.get("scope")
+        if scope == "completed":
+            tasks = [task for task in tasks if str(task.get("status") or "").casefold() == "done"]
+        elif scope == "active":
+            tasks = [task for task in tasks if str(task.get("status") or "").casefold() != "done"]
         if parent_id:
-            tasks = [task for task in tasks if str(task.get("parent_id") or "") == str(parent_id)]
+            if filters.get("recursive"):
+                seen = {str(parent_id)}
+                descendants = []
+                while True:
+                    layer = [task for task in tasks if str(task.get("parent_id") or "") in seen
+                             and str(task["id"]) not in seen]
+                    if not layer:
+                        break
+                    descendants.extend(layer)
+                    seen.update(str(task["id"]) for task in layer)
+                tasks = descendants
+            else:
+                tasks = [task for task in tasks if str(task.get("parent_id") or "") == str(parent_id)]
         if project_id:
             tasks = [task for task in tasks if str(task.get("project") or "") == str(project_id)]
         if sprint:
@@ -214,18 +231,19 @@ class MockProvider(Provider):
                 or query in str(task.get("title", "")).casefold()
                 or query in str(task.get("project", "")).casefold()
             ]
-        if (mine or related) and assignee:
+        if mine or related:
             tasks = [task for task in tasks if task.get("assignee") == assignee]
-        if today:
-            today_prefix = now_iso()[:10]
-            tasks = [task for task in tasks if str(task.get("created_at", "")).startswith(today_prefix)]
+        tasks = [
+            task for task in tasks
+            if task_matches_dates(task.get("start") or task.get("created_at"), task.get("end"), filters)
+        ]
         return self._limit(tasks, filters.get("limit"))
 
     def preview_list_tasks(self, filters: dict[str, Any]) -> dict[str, Any]:
         return {"operation": "task.list", "filters": filters, "store": str(self.data_path)}
 
     def list_subtasks(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
-        subtasks = [task for task in self.list_tasks(filters) if task.get("kind") == "subtask"]
+        subtasks = [task for task in self.list_tasks({**filters, "limit": None}) if task.get("kind") == "subtask"]
         return self._limit(subtasks, filters.get("limit"))
 
     def preview_list_subtasks(self, filters: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +254,45 @@ class MockProvider(Provider):
         task = self._find_task(data, task_id)
         logs = [log for log in data["worklogs"] if log["task_id"] == task_id]
         return {**task, "worklogs": logs}
+
+    def list_task_resources(self, kind: str, task_id: str) -> dict[str, Any]:
+        task = self._find_task(self._read(), task_id)
+        key = {"comment": "comments", "checklist": "checklist", "attachment": "attachments"}[kind]
+        items = list(task.get(key) or [])
+        return {"items": items, "total_items": len(items)}
+
+    def timesheet(self, filters: dict[str, Any]) -> dict[str, Any]:
+        end = date.fromisoformat(filters["date"])
+        days = max(1, int(filters.get("days") or 1))
+        start = date.fromisoformat(filters["date_from"]) if filters.get("date_from") else end
+        if filters.get("date_from"):
+            days = (end - start).days + 1
+        elif days > 1:
+            remaining = days
+            while True:
+                if start.weekday() < 5:
+                    remaining -= 1
+                    if not remaining:
+                        break
+                start -= timedelta(days=1)
+        data = self._read()
+        titles = {str(task["id"]): task["title"] for task in data["tasks"]}
+        entries = [
+            {
+                "id": log.get("id"), "date": log.get("date"),
+                "workflow_id": log.get("task_id"), "title": titles.get(str(log.get("task_id")), ""),
+                "hours": self._hours(log.get("time_spent")), "action": log.get("type"),
+                "description": log.get("content"),
+            }
+            for log in data["worklogs"]
+            if start.isoformat() <= str(log.get("date") or "") <= end.isoformat()
+        ]
+        entries.sort(key=lambda entry: entry["date"])
+        return {
+            "date": end.isoformat(), "date_from": start.isoformat(), "date_to": end.isoformat(),
+            "days": days, "total_logs": len(entries), "total_hours": round(sum(entry["hours"] for entry in entries), 2),
+            "logtimes": entries,
+        }
 
     def update_task(self, task_id: str, request: TaskUpdate) -> dict[str, Any]:
         data = self._read()

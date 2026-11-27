@@ -9,7 +9,12 @@ from .client import BecaClient
 from .config import require_env
 
 
+class BecaResponseError(RuntimeError):
+    """An API returned an unexpected response instead of the expected data."""
+
+
 WORK_IN_PROCESS_URL = "https://work.becawork.vn/api/Default/Work_GetWorkInProcess"
+WORK_BY_PROJECT_URL = "https://work.becawork.vn/api/Default/Work_GetAllByProject"
 MY_WORK_COUNT_BY_PROJECT_URL = "https://work.becawork.vn/api/Default/Work_MyWorkCountByProject"
 GET_LOGTIME_URL = "https://work.becawork.vn/api/Default/Work_GetLogtimeByWorkId"
 CHECK_OVER_LOGTIME_URL = "https://work.becawork.vn/api/Default/Work_CheckOverInLogtime"
@@ -31,20 +36,24 @@ CHECK_APPLY_SLA_IN_PROJECT_URL = "https://work.becawork.vn/api/Default/Work_Chec
 GET_HISTORY_CHANGED_STATUS_URL = "https://work.becawork.vn/api/Default/Work_GetHistoryChangedStatus"
 RECENT_ACTIVITY_URL = "https://work.becawork.vn/api/Default/Work_RecentActivity"
 TIMESHEET_REPORT_URL = "https://work.becawork.vn/api/Default/Work_TimeSheetReport"
+TIMESHEET_PERSONAL_URL = "https://work.becawork.vn/api/Default/Work_TimeSheetPersonal"
 
 
-def get_work_in_process(client: BecaClient, print_body: bool = True) -> list[dict]:
+def get_work_in_process(
+    client: BecaClient, print_body: bool = True, *, page_number: int = 1,
+    row_number: int | None = None, work_type: str = "Xử lý"
+) -> list[dict]:
     params = {
         "title": "",
         "projectName": "",
         "group": "",
         "status": "          ",
         "employee": "",
-        "type": "Xử lý",
+        "type": work_type,
         "isComplete": 1,
         "layout": 2,
-        "pageNumber": 1,
-        "rowNumber": int(os.getenv("WORK_ROW_NUMBER", "100")),
+        "pageNumber": page_number,
+        "rowNumber": row_number if row_number is not None else int(os.getenv("WORK_ROW_NUMBER", "100")),
         "projectType": "",
         "typeSort": 0,
         "overDue": -1,
@@ -54,7 +63,43 @@ def get_work_in_process(client: BecaClient, print_body: bool = True) -> list[dic
         f"{WORK_IN_PROCESS_URL}?{urlencode(params)}",
         print_body=print_body,
     )
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        raise BecaResponseError("Work_GetWorkInProcess did not return a list.")
+    return data
+
+
+def get_project_works(client: BecaClient, project_id: str) -> list[dict]:
+    # The layout=2 response is a flat project snapshot; live verification
+    # showed it can exceed rowNumber. Don't assume that it is paginated.
+    params = {"projectId": project_id, "type": "Xử lý", "title": "", "status": "",
+              "layout": 2, "pageNumber": 1, "rowNumber": 100}
+    data = client.request_json(f"{WORK_BY_PROJECT_URL}?{urlencode(params)}", print_body=False)
+    if not isinstance(data, list):
+        raise BecaResponseError("Work_GetAllByProject did not return a list.")
+    return data
+
+
+def task_resource_request(kind: str, task_id: str) -> tuple[str, dict[str, str]]:
+    if kind == "comment":
+        return "Work_GetComment", {"workId": task_id}
+    if kind == "checklist":
+        return "Work_GetWorkCheckListByWork", {"workId": task_id}
+    if kind == "attachment":
+        return "Work_GetListFileAttach", {"workFlowId": task_id, "userWorkflowId": task_id}
+    raise ValueError(f"Unsupported task resource: {kind}")
+
+
+def get_task_resources(client: BecaClient, kind: str, task_id: str) -> dict:
+    endpoint, query = task_resource_request(kind, task_id)
+    data = client.request_json(
+        f"https://work.becawork.vn/api/Default/{endpoint}?{urlencode(query)}", print_body=False
+    )
+    if isinstance(data, list):
+        return {"items": data, "total_items": len(data)}
+    if kind == "attachment" and isinstance(data, dict) and isinstance(data.get("items"), list):
+        items = data["items"]
+        return {"items": items, "total_items": data.get("totalItems", len(items))}
+    raise BecaResponseError(f"{endpoint} returned an unexpected response.")
 
 
 def list_workflows(client: BecaClient) -> list[dict[str, object]]:
@@ -95,6 +140,7 @@ def normalize_work(work: dict) -> dict[str, object]:
         "status": work.get("statusName") or work.get("status") or "",
         "start": work.get("start") or "",
         "end": work.get("end") or "",
+        "completed_at": work.get("dateComplete") or "",
         "category": work.get("categoryName") or "",
     }
 
@@ -536,8 +582,8 @@ def get_api_setting(client: BecaClient) -> dict:
 
 def get_current_user(client: BecaClient) -> dict:
     data = client.request_json(GET_INF_LOGIN_URL, print_body=False)
-    if not isinstance(data, dict):
-        raise SystemExit("Cannot load Work_GetInfLogin.")
+    if not isinstance(data, dict) or not (data.get("id") or data.get("email")):
+        raise BecaResponseError("Work_GetInfLogin did not return an account identity.")
     return data
 
 
@@ -584,7 +630,9 @@ def get_work_children(client: BecaClient, workflow_id: str) -> list[dict]:
     # shape) still returns those deeper children, so fall back to it.
     params = {"WorkflowCode": workflow_id, "newLayout": "false"}
     data = client.request_json(f"{GET_WORK_CHILD_URL}?{urlencode(params)}", print_body=False)
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        raise BecaResponseError("Work_GetWorkChild (legacy layout) did not return a list.")
+    return data
 
 
 def get_work_history(client: BecaClient, workflow_id: str) -> list[dict]:
@@ -600,7 +648,99 @@ def get_timesheet_report(client: BecaClient, date: str, email: str) -> list[dict
     # left blank (verified: same result set with/without a real dept id).
     params = {"date": date, "projectName": "-1", "email": email, "department": ""}
     data = client.request_json(f"{TIMESHEET_REPORT_URL}?{urlencode(params)}", print_body=False)
+    if not isinstance(data, list):
+        raise BecaResponseError("Work_TimeSheetReport did not return a list.")
+    return data
+
+
+def get_department_timesheet_report(client: BecaClient, month: str, department: str) -> list[dict]:
+    # This is a *different* endpoint from get_timesheet_report
+    # (Work_TimeSheetPersonal, not Work_TimeSheetReport) - found by comparing
+    # what BecaWork's own "Xem theo ngày" timesheet view calls. With `email`
+    # left blank and a real `department` id it returns every person in that
+    # department for the current month (the `date` value doesn't actually
+    # filter anything - verified it returns the same full month-to-date rows
+    # regardless of what's passed). Each row's top-level `email`/`fullName`
+    # are always null here; the real person info is in the `data` JSON string
+    # (`Email`, `Nguoilap`, etc), same as get_timesheet_report's rows.
+    params = {"date": month, "projectName": "-1", "email": "", "department": department}
+    data = client.request_json(f"{TIMESHEET_PERSONAL_URL}?{urlencode(params)}", print_body=False)
     return data if isinstance(data, list) else []
+
+
+NEW_CALENDAR_ROOT_URL = "https://new-calendar.becawork.vn/"
+CALENDAR_GROUP_URL = "https://new-calendar.becawork.vn/api/Calendar/GetDynamicCalendarGroup"
+# This subdomain has its own OIDC session separate from work.becawork.vn's -
+# a plain GET to the root first completes that handshake (reusing the same
+# login), otherwise the POST below 405s trying to resubmit the SSO form.
+#
+# `note` looks like it should scope to one specific calendar event
+# (BecaWork's own UI sends the workflow id of whatever event you last
+# clicked), but empirically any non-empty value in this exact shape returns
+# every "ĐƠN XIN NGHỈ PHÉP" (leave request) event for the given date range/
+# department - it's acting as a fixed category filter, not a per-event one.
+LEAVE_CALENDAR_NOTE = "1181276/[/*/]//[/*/]/"
+
+
+def get_department_leave_calendar(client: BecaClient, from_date: str, to_date: str, department: str) -> list[dict]:
+    """Approved leave-request calendar events for a department, one row per
+    day in [from_date, to_date] (YYYY-MM-DD), each with an `events` list."""
+    client.open_with_auth_forms(NEW_CALENDAR_ROOT_URL)
+    body = {
+        "fromDate": f"{from_date}T00:00:00",
+        "toDate": f"{to_date}T00:00:00",
+        "note": LEAVE_CALENDAR_NOTE,
+        "departmentFillter": department,
+        "userCreateFillter": "all",
+        "userFillter": "all",
+    }
+    raw = client.open_with_auth_forms(
+        CALENDAR_GROUP_URL,
+        headers={"Content-Type": "application/json; charset=UTF-8"},
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+    )
+    try:
+        data = json.loads(raw, strict=False)
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def parse_leave_days(raw_days: list[dict]) -> dict[str, dict[str, float]]:
+    """Map person ref (e.g. "P:10935") -> {ISO date: leave fraction of that day}.
+
+    `BuoiNghi` ("Sáng"/"Chiều" = half day, "Cả ngày" = full day) gives the
+    fraction for that specific date - `TongSoNgayNghi` is the total length of
+    the whole leave request (e.g. 5 for a 5-day span) so it's not usable
+    per-day. Multiple half-day records on the same date are summed and capped
+    at 1.0 (a full day off).
+
+    Each day entry's `events` is oddly nested: events -> parentValues[] ->
+    childrenValues[] -> the actual leave record (with `isAccepted`,
+    `masterDetail`, etc), not a flat list of records."""
+    leave_by_person: dict[str, dict[str, float]] = {}
+    for day in raw_days:
+        date_str = str(day.get("date") or "")[:10]
+        if not date_str:
+            continue
+        for event in day.get("events") or []:
+            for parent_value in event.get("parentValues") or []:
+                for record in parent_value.get("childrenValues") or []:
+                    if not record.get("isAccepted"):
+                        continue
+                    try:
+                        lines = json.loads(record.get("masterDetail") or "[]")
+                    except (TypeError, ValueError):
+                        lines = []
+                    for line in lines:
+                        ref = str(line.get("TenNV") or "").strip()
+                        if not ref:
+                            continue
+                        fraction = 0.5 if line.get("BuoiNghi") in ("Sáng", "Chiều") else 1.0
+                        by_date = leave_by_person.setdefault(ref, {})
+                        by_date[date_str] = min(1.0, by_date.get(date_str, 0.0) + fraction)
+    return leave_by_person
 
 
 def get_recent_activity(client: BecaClient, project_id: str = "", user_id: str = "") -> list[dict]:
