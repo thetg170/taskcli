@@ -265,6 +265,31 @@ External-id cho log: `<YYYY-MM-DD>:<WORKFLOW_ID>:progress` (vd `2026-07-02:14233
 
 ## 7. Dùng với agent
 
+### Báo cáo tuần theo dự án
+
+Khi người dùng yêu cầu báo cáo tuần, lấy đúng khoảng ngày (mặc định tuần làm việc thứ Hai–thứ Sáu hiện tại nếu không chỉ định). Xác minh tài khoản bằng `taskcli whoami --json`, truy vấn `taskcli report work --from <ngày> --to <ngày> --json`, đối chiếu logtime bằng `taskcli logtime timesheet --date <ngày cuối> --days 5 --json` cho tuần làm việc đầy đủ (điều chỉnh khoảng tra cứu nếu khác), rồi xem `taskcli task show <id> --json` cho các task cần xác minh tiến độ, deadline và dự án. Bổ sung task có logtime trong tuần nhưng bị bỏ sót ở danh sách task. Nhóm theo dự án; task cha chỉ làm tiêu đề nhóm nếu không đại diện việc riêng để tránh đếm trùng.
+
+**Mẫu output bắt buộc:**
+
+```text
+BÁO CÁO CÔNG VIỆC TUẦN DD/MM – DD/MM/YYYY
+Nhân viên: <họ tên>
+
+Dự án 1: <tên dự án>
+Vai trò: <vai trò>
+Task hiện tại:
+1. <Task thứ nhất>.
+2. <Task thứ hai>.
+
+Kết quả: <kết quả thực tế>.
+Tiến độ: <trạng thái hoặc phần trăm xác minh được>.
+Vướng mắc: <vướng mắc hoặc Chưa ghi nhận>.
+Việc tiếp theo: <kế hoạch tiếp theo>.
+Deadline: <ngày/tháng theo từng task nếu khác nhau>.
+```
+
+Trong Markdown, đánh số từng task riêng, bắt đầu lại từ 1 ở mỗi dự án. Các dòng Vai trò, Kết quả, Tiến độ, Vướng mắc, Việc tiếp theo, Deadline phải trình bày gọn; dùng hai dấu cách cuối dòng để xuống dòng trong cùng đoạn, không để dòng trống xen giữa các trường. Có thể in đậm tên trường và tiêu đề dự án. Không dùng bảng hoặc bullet cho các trường còn lại. Không tạo phần trăm, deadline hoặc kết quả chưa được xác minh; khi thiếu dữ liệu ghi "Chưa ghi nhận". Không thêm phần tổng hợp hoặc lời giải thích ngoài mẫu trừ khi người dùng yêu cầu.
+
 Mục tiêu: agent trả lời được *"tôi có những task gì?"*, *"hôm nay còn task nào chưa logtime?"* rồi *"log giùm task X 8 tiếng: ..."*.
 
 **Phân biệt hai loại câu hỏi — đừng nhầm:**
